@@ -281,13 +281,16 @@ export default function App() {
         doneReading = done;
         if (value) {
           buffer += decoder.decode(value, { stream: !doneReading });
-          const parts = buffer.split("\n\n");
-          buffer = parts.pop() || ""; // remainder of partial line
+          
+          let lineEndIndex;
+          while ((lineEndIndex = buffer.indexOf("\n")) !== -1) {
+            const line = buffer.slice(0, lineEndIndex).trim();
+            buffer = buffer.slice(lineEndIndex + 1);
 
-          for (const part of parts) {
-            const trimmed = part.trim();
-            if (trimmed.startsWith("data: ")) {
-              const dataStr = trimmed.slice(6).trim();
+            if (line.startsWith("data: ")) {
+              const dataStr = line.slice(6).trim();
+              if (dataStr === "[DONE]") continue;
+
               try {
                 const parsed = JSON.parse(dataStr);
                 
