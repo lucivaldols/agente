@@ -82,14 +82,13 @@ function writeDB(data: DatabaseSchema) {
   }
 }
 
-// Initiates the llama-server and the custom agent in the background as requested
+// Initiates the llama-server in the background on port 8080 as requested
 function initLlamaServer() {
-  console.log("[Llama Manager] Iniciando processos de apoio em segundo plano...");
+  console.log("[Llama Manager] Iniciando llama-server local em segundo plano...");
   
-  // 1. Start the llama-server command
   // Exact user command requested:
-  // cd ~/llama.cpp && ./build/bin/llama-server -m ~/models/qwen2-1.5b.gguf --host 127.0.0.1 --port 9090
-  const llamaCommandLine = `cd ~/llama.cpp && ./build/bin/llama-server -m ~/models/qwen2-1.5b.gguf --host 127.0.0.1 --port 9090`;
+  // cd ~/llama.cpp && ./build/bin/llama-server -m ~/models/tinyllama.gguf --host 127.0.0.1 --port 8080 -t 8 -c 1024 -fa
+  const llamaCommandLine = `cd ~/llama.cpp && ./build/bin/llama-server -m ~/models/tinyllama.gguf --host 127.0.0.1 --port 8080 -t 8 -c 1024 -fa`;
   
   try {
     const llamaChild = spawn(llamaCommandLine, {
@@ -120,42 +119,6 @@ function initLlamaServer() {
     });
   } catch (err) {
     console.error("[Llama Manager Error] Exceção ao iniciar o processo llama-server:", err);
-  }
-
-  // 2. Start the custom local Node.js agent inside ~/llama.cpp/agent
-  // Exact command: cd ~/llama.cpp/agent && node server.js
-  const agentCommandLine = `cd ~/llama.cpp/agent && node server.js`;
-  console.log("[Llama Manager] Iniciando agente customizado local em segundo plano...");
-  
-  try {
-    const agentChild = spawn(agentCommandLine, {
-      shell: true,
-      detached: false
-    });
-
-    agentChild.stdout.on("data", (data) => {
-      const line = data.toString().trim();
-      if (line) {
-        console.log(`[Custom Agent stdout]: ${line}`);
-      }
-    });
-
-    agentChild.stderr.on("data", (errors) => {
-      const errLine = errors.toString().trim();
-      if (errLine) {
-        console.log(`[Custom Agent stderr]: ${errLine}`);
-      }
-    });
-
-    agentChild.on("error", (err) => {
-      console.error("[Llama Manager Error] Falha ao tentar spawnar o Custom Agent:", err);
-    });
-
-    agentChild.on("close", (code) => {
-      console.log(`[Llama Manager Info] Processo Custom Agent finalizou com código: ${code}`);
-    });
-  } catch (err) {
-    console.error("[Llama Manager Error] Exceção ao iniciar o Custom Agent:", err);
   }
 }
 
@@ -347,14 +310,14 @@ async function startServer() {
     }, 60000); // 60 seconds is recommended for CPU local inference (qwen2-1.5b takes time on initial runs)
 
     try {
-      console.log("[Llama Manager] Tentando se conectar com o llama-server local em http://127.0.0.1:9090...");
-      const llamaResponse = await fetch("http://127.0.0.1:9090/v1/chat/completions", {
+      console.log("[Llama Manager] Tentando se conectar com o llama-server local em http://127.0.0.1:8080...");
+      const llamaResponse = await fetch("http://127.0.0.1:8080/v1/chat/completions", {
         method: "POST",
         headers: {
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          model: "qwen2-1.5b",
+          model: "tinyllama",
           messages: messagesPayload,
           temperature: 0.7
         }),
@@ -368,8 +331,8 @@ async function startServer() {
         aiReply = data.choices?.[0]?.message?.content || "";
         if (aiReply) {
           fetchedFromLlama = true;
-          console.log("[Llama Manager] SUCESSO: Resposta obtida diretamente do llama.cpp local (Qwen)!");
-          simulatedTools.push({ icon: "⚡", label: "Processado localmente via llama.cpp (Porta 9090)" });
+          console.log("[Llama Manager] SUCESSO: Resposta obtida diretamente do llama.cpp local (TinyLlama)!");
+          simulatedTools.push({ icon: "⚡", label: "Processado localmente via llama.cpp (Porta 8080)" });
         }
       } else {
         console.warn(`[Llama Manager] llama-server retornou status HTTP de erro: ${llamaResponse.status}`);
