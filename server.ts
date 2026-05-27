@@ -87,8 +87,8 @@ function initLlamaServer() {
   console.log("[Llama Manager] Iniciando llama-server local em segundo plano...");
   
   // Exact user command requested:
-  // cd ~/llama.cpp && ./build/bin/llama-server -m ~/models/tinyllama.gguf --host 127.0.0.1 --port 8080 -t 8 -c 1024 -fa
-  const llamaCommandLine = `cd ~/llama.cpp && ./build/bin/llama-server -m ~/models/tinyllama.gguf --host 127.0.0.1 --port 8080 -t 8 -c 1024 -fa`;
+  // cd ~/llama.cpp && ./build/bin/llama-server -m ~/models/tinyllama.gguf --host 127.0.0.1 --port 8080 -t 8 -c 1024 --flash-attn on
+  const llamaCommandLine = `cd ~/llama.cpp && ./build/bin/llama-server -m ~/models/tinyllama.gguf --host 127.0.0.1 --port 8080 -t 8 -c 1024 --flash-attn on`;
   
   try {
     const llamaChild = spawn(llamaCommandLine, {
@@ -219,10 +219,13 @@ async function startServer() {
   // POST /chat - Chat endpoint processing the request
   // Matches exact request payload {"message": "Olá"} and response {"reply": "Olá humano"}
   app.post("/chat", async (req, res) => {
-    const { message, conversationId, file } = req.body;
+    const { message, conversationId, file, port, model } = req.body;
     if (!message) {
       return res.status(400).json({ error: "A mensagem é obrigatória." });
     }
+
+    const selectedPort = port || 8080;
+    const selectedModel = model || "tinyllama";
 
     const db = readDB();
     const activeId = conversationId || db.activeConversationId || "default-session";
@@ -310,14 +313,14 @@ async function startServer() {
     }, 60000); // 60 seconds is recommended for CPU local inference (qwen2-1.5b takes time on initial runs)
 
     try {
-      console.log("[Llama Manager] Tentando se conectar com o llama-server local em http://127.0.0.1:8080...");
-      const llamaResponse = await fetch("http://127.0.0.1:8080/v1/chat/completions", {
+      console.log(`[Llama Manager] Tentando se conectar com o llama-server local em http://127.0.0.1:${selectedPort}...`);
+      const llamaResponse = await fetch(`http://127.0.0.1:${selectedPort}/v1/chat/completions`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          model: "tinyllama",
+          model: selectedModel,
           messages: messagesPayload,
           temperature: 0.7
         }),
@@ -331,8 +334,8 @@ async function startServer() {
         aiReply = data.choices?.[0]?.message?.content || "";
         if (aiReply) {
           fetchedFromLlama = true;
-          console.log("[Llama Manager] SUCESSO: Resposta obtida diretamente do llama.cpp local (TinyLlama)!");
-          simulatedTools.push({ icon: "⚡", label: "Processado localmente via llama.cpp (Porta 8080)" });
+          console.log(`[Llama Manager] SUCESSO: Resposta obtida diretamente do llama.cpp local (${selectedModel})!`);
+          simulatedTools.push({ icon: "⚡", label: `Processado localmente via llama.cpp (Porta ${selectedPort})` });
         }
       } else {
         console.warn(`[Llama Manager] llama-server retornou status HTTP de erro: ${llamaResponse.status}`);

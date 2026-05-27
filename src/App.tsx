@@ -16,7 +16,8 @@ import {
   Terminal,
   Brain,
   ChevronRight,
-  Info
+  Info,
+  Settings
 } from "lucide-react";
 import { Sidebar } from "./components/Sidebar";
 import { MarkdownRenderer } from "./components/MarkdownRenderer";
@@ -34,6 +35,23 @@ export default function App() {
   const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [dragActive, setDragActive] = useState<boolean>(false);
+
+  const [configPort, setConfigPort] = useState<number>(() => {
+    const saved = localStorage.getItem("llama_port");
+    return saved ? parseInt(saved, 10) : 8080;
+  });
+  const [configModel, setConfigModel] = useState<string>(() => {
+    return localStorage.getItem("llama_model") || "tinyllama";
+  });
+  const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
+
+  useEffect(() => {
+    localStorage.setItem("llama_port", configPort.toString());
+  }, [configPort]);
+
+  useEffect(() => {
+    localStorage.setItem("llama_model", configModel);
+  }, [configModel]);
 
   const chatEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -196,7 +214,9 @@ export default function App() {
         body: JSON.stringify({
           message: messageText || "Analise o arquivo anexo",
           conversationId: activeConversationId,
-          file: filePayload
+          file: filePayload,
+          port: configPort,
+          model: configModel
         })
       });
 
@@ -329,6 +349,16 @@ export default function App() {
                 SQLite memória ativa
               </span>
             </div>
+
+            <button
+              onClick={() => setIsSettingsOpen(true)}
+              className="p-2 rounded-xl text-slate-400 hover:text-white hover:bg-white/[0.04] active:scale-95 transition cursor-pointer flex items-center gap-1.5 border border-white/5 bg-slate-900/40 text-xs font-semibold"
+              title="Configurações do llama.cpp"
+              id="settings-trigger-btn"
+            >
+              <Settings size={15} className="text-brand-500" />
+              <span>Configurações</span>
+            </button>
           </div>
         </header>
 
@@ -566,13 +596,153 @@ export default function App() {
                 </button>
               </div>
             </div>
-            
+
             <p className="text-[10px] text-center text-slate-600 font-mono">
-              Modelo ativo: <strong>llama-3-8b-instruct.Q4_K_M.gguf</strong> • SQLite Memory • PWA pronto
+              Modelo local: <strong className="text-brand-400 font-bold">{configModel}.gguf</strong> • Porta ativa: <strong className="text-emerald-400 font-bold">{configPort}</strong> • SQLite Memória • PWA pronto
             </p>
           </div>
         </div>
       </main>
+
+      {/* Configuration Slide-Over Panel */}
+      <AnimatePresence>
+        {isSettingsOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            {/* Backdrop */}
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setIsSettingsOpen(false)}
+              className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+              id="settings-backdrop"
+            />
+
+            {/* Modal Card */}
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 15 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 15 }}
+              transition={{ type: "spring", duration: 0.3 }}
+              className="relative w-full max-w-md overflow-hidden rounded-2xl border border-white/10 bg-[#161616] p-6 shadow-2xl z-10"
+              id="settings-modal-card"
+            >
+              {/* Header */}
+              <div className="flex items-center justify-between pb-4 border-b border-white/5 mb-6">
+                <div className="flex items-center gap-2">
+                  <div className="p-1.5 bg-brand-500/10 border border-brand-500/20 rounded-lg text-brand-400">
+                    <Settings size={18} />
+                  </div>
+                  <h3 className="font-display font-bold text-base text-white">Configurações de Conexão</h3>
+                </div>
+                <button
+                  onClick={() => setIsSettingsOpen(false)}
+                  className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-white/5 transition cursor-pointer"
+                  title="Fechar"
+                  id="settings-close-btn"
+                >
+                  <X size={16} />
+                </button>
+              </div>
+
+              {/* Form Content */}
+              <div className="space-y-5">
+                {/* Port Selection */}
+                <div className="space-y-2">
+                  <label className="block text-xs font-bold font-mono text-slate-300 uppercase tracking-wider">
+                    Porta do Servidor llama-server:
+                  </label>
+                  <p className="text-[11px] text-slate-500 leading-normal">
+                    Selecione ou insira a porta local na qual o seu serviço <code className="text-slate-300">llama.cpp</code> está respondendo.
+                  </p>
+                  
+                  <div className="flex gap-2">
+                    {/* Prestyled Quick Ports */}
+                    {[8080, 9090, 3000].map((portVal) => (
+                      <button
+                        key={portVal}
+                        type="button"
+                        onClick={() => setConfigPort(portVal)}
+                        className={`flex-1 py-1.5 px-2 text-xs font-mono font-medium rounded-lg border transition cursor-pointer
+                          ${configPort === portVal
+                            ? "bg-brand-500/10 border-brand-500 text-brand-400"
+                            : "bg-slate-900/60 border-white/5 text-slate-400 hover:text-slate-200 hover:border-white/15"}`}
+                      >
+                        Porta {portVal}
+                      </button>
+                    ))}
+                  </div>
+
+                  <input
+                    type="number"
+                    value={configPort}
+                    onChange={(e) => setConfigPort(parseInt(e.target.value, 10) || 8080)}
+                    placeholder="Ex: 8080"
+                    className="w-full bg-slate-900 border border-white/10 rounded-xl px-3 py-2 text-sm text-slate-100 placeholder-slate-600 focus:outline-none focus:border-brand-500 font-mono"
+                    min="1"
+                    max="65535"
+                    id="input-port-setting"
+                  />
+                </div>
+
+                {/* Model Selection */}
+                <div className="space-y-2">
+                  <label className="block text-xs font-bold font-mono text-slate-300 uppercase tracking-wider">
+                    Identidade do Modelo GGUF:
+                  </label>
+                  <p className="text-[11px] text-slate-500 leading-normal">
+                    Selecione um dos modelos sugeridos ou digite o nome exato carregado por seu comando.
+                  </p>
+
+                  <div className="flex gap-2">
+                    {/* Prestyled Quick Models */}
+                    {["tinyllama", "qwen2-1.5b", "llama-3-8b"].map((modelVal) => (
+                      <button
+                        key={modelVal}
+                        type="button"
+                        onClick={() => setConfigModel(modelVal)}
+                        className={`flex-1 py-1.5 px-2 text-xs font-medium rounded-lg border transition cursor-pointer truncate
+                          ${configModel === modelVal
+                            ? "bg-brand-500/10 border-brand-500 text-brand-400"
+                            : "bg-slate-900/60 border-white/5 text-slate-400 hover:text-slate-200 hover:border-white/15"}`}
+                      >
+                        {modelVal}
+                      </button>
+                    ))}
+                  </div>
+
+                  <input
+                    type="text"
+                    value={configModel}
+                    onChange={(e) => setConfigModel(e.target.value)}
+                    placeholder="Nome do Modelo (ex: tinyllama)"
+                    className="w-full bg-slate-900 border border-white/10 rounded-xl px-3 py-2 text-sm text-slate-100 placeholder-slate-600 focus:outline-none focus:border-brand-500 font-mono"
+                    id="input-model-setting"
+                  />
+                </div>
+              </div>
+
+              {/* Status and Actions */}
+              <div className="mt-8 pt-4 border-t border-white/5 flex flex-col gap-3">
+                <div className="flex justify-between items-center text-[11px] font-mono text-slate-400 bg-slate-950 p-2.5 rounded-xl border border-white/5">
+                  <span>URL do Endpoint:</span>
+                  <span className="text-brand-400 font-semibold truncate select-all">
+                    http://127.0.0.1:{configPort}/v1
+                  </span>
+                </div>
+                
+                <button
+                  onClick={() => setIsSettingsOpen(false)}
+                  className="w-full py-2.5 bg-brand-600 hover:bg-brand-700 active:scale-95 text-white font-medium text-sm rounded-xl transition cursor-pointer hover:shadow-lg shadow-brand-500/15"
+                  id="save-settings-btn"
+                >
+                  Salvar e Fechar
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
