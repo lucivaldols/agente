@@ -820,6 +820,22 @@ export default function App() {
                     id="input-model-setting"
                   />
                 </div>
+
+                {/* LLM Context Limit Tips Panel */}
+                <div className="p-3 bg-brand-500/5 border border-brand-500/10 rounded-xl space-y-1.5">
+                  <h4 className="text-[11px] font-bold font-mono text-brand-400 uppercase tracking-wide flex items-center gap-1">
+                    💡 Dica de Tamanho de Contexto (Context Size)
+                  </h4>
+                  <p className="text-[10px] text-slate-400 leading-relaxed">
+                    Se você receber erros informando que a requisição excede os tokens disponíveis (ex: 512 tokens), inicie seu servidor GGUF com o parâmetro de contexto ampliado:
+                  </p>
+                  <pre className="text-[9px] font-mono bg-black/40 p-1.5 rounded text-slate-300 overflow-x-auto border border-white/5">
+                    ./llama-server -m modelo.gguf -c 2048 -t 4
+                  </pre>
+                  <p className="text-[9px] text-slate-500">
+                    O agente agora encolhe dinamicamente o histórico e o prompt de sistema do llama.cpp local para caber mesmo sob limites restritos.
+                  </p>
+                </div>
               </div>
 
               {/* Status and Actions */}

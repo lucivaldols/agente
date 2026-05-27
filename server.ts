@@ -107,8 +107,8 @@ function initLlamaServer() {
   console.log("[Llama Manager] Iniciando llama-server local em segundo plano...");
   
   // Exact user command requested:
-  // cd ~/llama.cpp && ./build/bin/llama-server -m ~/models/tinyllama.gguf --host 127.0.0.1 --port 8080 -t 4 -c 512 -np 1 --flash-attn on
-  const llamaCommandLine = `cd ~/llama.cpp && ./build/bin/llama-server -m ~/models/tinyllama.gguf --host 127.0.0.1 --port 8080 -t 4 -c 512 -np 1 --flash-attn on`;
+  // cd ~/llama.cpp && ./build/bin/llama-server -m ~/models/tinyllama.gguf --host 127.0.0.1 --port 8080 -t 4 -c 2048 -np 1 --flash-attn on
+  const llamaCommandLine = `cd ~/llama.cpp && ./build/bin/llama-server -m ~/models/tinyllama.gguf --host 127.0.0.1 --port 8080 -t 4 -c 2048 -np 1 --flash-attn on`;
   
   try {
     const llamaChild = spawn(llamaCommandLine, {
@@ -472,25 +472,35 @@ async function startServer() {
       - Seja direto e focado no assunto, pensando sempre como um dev sênior mentor de alta performance.
     `;
 
+    // Dynamic System Prompt specifically geared to run smoothly inside low-context local models (e.g. 512 / 2048 context on mobile/Ubuntu loopback)
+    const localSystemPrompt = `Você é o Agente Inteligente de Aprendizado e Lógica Local via SQLite (Nível: ${db.userProgress.level.toUpperCase()} | Tópico: ${db.userProgress.topic}).
+Sua missão é ensinar programação e lógica de forma extremamente clara e resumida.
+Regras de Contexto:
+- Responda em português direto e objetivo. Use blocos de código com linguagem explícita se necessário.
+- NÃO dê respostas longas ou redundantes. Seja conciso para economizar contexto (limite rígido).
+- No final absoluto de sua mensagem, se houver novas conquistas ou erros detectados, acrescente em linha única o bloco:
+[UPDATE_PROGRESS]{"level":"iniciante"|"intermediário"|"avançado","topic":"tópico","mistakes":["erro_curto"],"achievements":["conquista_curta"],"notes":"resumo_curto"}`;
+
+    // Prepare context messages payload for local llama execution (compact System prompt + last 2 history turns optimized + trim)
     const messagesPayload: Array<{ role: string; content: string }> = [
-      { role: "system", content: systemPrompt }
+      { role: "system", content: localSystemPrompt }
     ];
 
-    // Read sliced conversation history (last 4 messages) to feed memory context efficiently on mobile without slowing down
-    const recentMessages = conversation.messages.slice(-4);
+    // Read sliced conversation history (last 2 messages to prevent overflow on tight local servers)
+    const recentMessages = conversation.messages.slice(-2);
     recentMessages.forEach((msg) => {
       if (msg.user_message) {
-        messagesPayload.push({ role: "user", content: msg.user_message });
+        messagesPayload.push({ role: "user", content: msg.user_message.substring(0, 250) }); // Limit input history length
       }
       if (msg.ai_response) {
-        messagesPayload.push({ role: "assistant", content: msg.ai_response });
+        messagesPayload.push({ role: "assistant", content: msg.ai_response.substring(0, 350) }); // Limit response history length
       }
     });
 
     // Append active user prompt (plus file metadata text to provide contextual understanding on Qwen)
     let activePrompt = message;
     if (file) {
-      activePrompt = `[Usuário anexou um arquivo chamado: "${file.name}" (tipo: ${file.type}, tamanho: ${file.size} bytes)]\n\nMensagem: ${message}`;
+      activePrompt = `[Arquivo: "${file.name}" (${file.size} bytes)]\n\nMensagem: ${message}`;
     }
     messagesPayload.push({ role: "user", content: activePrompt });
 
