@@ -82,43 +82,80 @@ function writeDB(data: DatabaseSchema) {
   }
 }
 
-// Initiates the llama-server in the background as requested
+// Initiates the llama-server and the custom agent in the background as requested
 function initLlamaServer() {
-  console.log("[Llama Manager] Iniciando processo llama-server em segundo plano...");
+  console.log("[Llama Manager] Iniciando processos de apoio em segundo plano...");
   
+  // 1. Start the llama-server command
   // Exact user command requested:
   // cd ~/llama.cpp && ./build/bin/llama-server -m ~/models/qwen2-1.5b.gguf --host 127.0.0.1 --port 9090
-  const commandLine = `cd ~/llama.cpp && ./build/bin/llama-server -m ~/models/qwen2-1.5b.gguf --host 127.0.0.1 --port 9090`;
+  const llamaCommandLine = `cd ~/llama.cpp && ./build/bin/llama-server -m ~/models/qwen2-1.5b.gguf --host 127.0.0.1 --port 9090`;
   
   try {
-    const child = spawn(commandLine, {
+    const llamaChild = spawn(llamaCommandLine, {
       shell: true,
       detached: false
     });
 
-    child.stdout.on("data", (data) => {
+    llamaChild.stdout.on("data", (data) => {
       const line = data.toString().trim();
       if (line) {
         console.log(`[llama.cpp stdout]: ${line}`);
       }
     });
 
-    child.stderr.on("data", (errors) => {
+    llamaChild.stderr.on("data", (errors) => {
       const errLine = errors.toString().trim();
       if (errLine) {
         console.log(`[llama.cpp stderr]: ${errLine}`);
       }
     });
 
-    child.on("error", (err) => {
+    llamaChild.on("error", (err) => {
       console.error("[Llama Manager Error] Falha ao tentar spawnar o processo llama-server:", err);
     });
 
-    child.on("close", (code) => {
+    llamaChild.on("close", (code) => {
       console.log(`[Llama Manager Info] Processo llama-server finalizou com código: ${code}`);
     });
   } catch (err) {
-    console.error("[Llama Manager Error] Exceção disparada ao iniciar o processo:", err);
+    console.error("[Llama Manager Error] Exceção ao iniciar o processo llama-server:", err);
+  }
+
+  // 2. Start the custom local Node.js agent inside ~/llama.cpp/agent
+  // Exact command: cd ~/llama.cpp/agent && node server.js
+  const agentCommandLine = `cd ~/llama.cpp/agent && node server.js`;
+  console.log("[Llama Manager] Iniciando agente customizado local em segundo plano...");
+  
+  try {
+    const agentChild = spawn(agentCommandLine, {
+      shell: true,
+      detached: false
+    });
+
+    agentChild.stdout.on("data", (data) => {
+      const line = data.toString().trim();
+      if (line) {
+        console.log(`[Custom Agent stdout]: ${line}`);
+      }
+    });
+
+    agentChild.stderr.on("data", (errors) => {
+      const errLine = errors.toString().trim();
+      if (errLine) {
+        console.log(`[Custom Agent stderr]: ${errLine}`);
+      }
+    });
+
+    agentChild.on("error", (err) => {
+      console.error("[Llama Manager Error] Falha ao tentar spawnar o Custom Agent:", err);
+    });
+
+    agentChild.on("close", (code) => {
+      console.log(`[Llama Manager Info] Processo Custom Agent finalizou com código: ${code}`);
+    });
+  } catch (err) {
+    console.error("[Llama Manager Error] Exceção ao iniciar o Custom Agent:", err);
   }
 }
 
@@ -302,6 +339,13 @@ async function startServer() {
     messagesPayload.push({ role: "user", content: activePrompt });
 
     // 1️⃣ High Priority: Attempt reading from standard local llama.cpp server endpoint at 127.0.0.1:9090
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => {
+      try {
+        controller.abort();
+      } catch (err) {}
+    }, 60000); // 60 seconds is recommended for CPU local inference (qwen2-1.5b takes time on initial runs)
+
     try {
       console.log("[Llama Manager] Tentando se conectar com o llama-server local em http://127.0.0.1:9090...");
       const llamaResponse = await fetch("http://127.0.0.1:9090/v1/chat/completions", {
@@ -314,8 +358,10 @@ async function startServer() {
           messages: messagesPayload,
           temperature: 0.7
         }),
-        signal: AbortSignal.timeout(12000) // 12s connection timeout to secure fallbacks
+        signal: controller.signal
       });
+
+      clearTimeout(timeoutId);
 
       if (llamaResponse.ok) {
         const data = await llamaResponse.json() as any;
@@ -328,7 +374,9 @@ async function startServer() {
       } else {
         console.warn(`[Llama Manager] llama-server retornou status HTTP de erro: ${llamaResponse.status}`);
       }
-    } catch (llamaError) {
+    } catch (llamaError: any) {
+      clearTimeout(timeoutId);
+      console.error("[Llama Manager Fetch Error]:", llamaError);
       console.log("[Llama Manager] llama-server local não pôde ser alcançado nesta requisição. Redirecionando para fallback...");
     }
 
