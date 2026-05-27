@@ -6,6 +6,8 @@
 import express from "express";
 import path from "path";
 import fs from "fs";
+import { spawn } from "child_process";
+import os from "os";
 import { GoogleGenAI } from "@google/genai";
 import { createServer as createViteServer } from "vite";
 
@@ -80,7 +82,50 @@ function writeDB(data: DatabaseSchema) {
   }
 }
 
+// Initiates the llama-server in the background as requested
+function initLlamaServer() {
+  console.log("[Llama Manager] Iniciando processo llama-server em segundo plano...");
+  
+  // Exact user command requested:
+  // cd ~/llama.cpp && ./build/bin/llama-server -m ~/models/qwen2-1.5b.gguf --host 127.0.0.1 --port 9090
+  const commandLine = `cd ~/llama.cpp && ./build/bin/llama-server -m ~/models/qwen2-1.5b.gguf --host 127.0.0.1 --port 9090`;
+  
+  try {
+    const child = spawn(commandLine, {
+      shell: true,
+      detached: false
+    });
+
+    child.stdout.on("data", (data) => {
+      const line = data.toString().trim();
+      if (line) {
+        console.log(`[llama.cpp stdout]: ${line}`);
+      }
+    });
+
+    child.stderr.on("data", (errors) => {
+      const errLine = errors.toString().trim();
+      if (errLine) {
+        console.log(`[llama.cpp stderr]: ${errLine}`);
+      }
+    });
+
+    child.on("error", (err) => {
+      console.error("[Llama Manager Error] Falha ao tentar spawnar o processo llama-server:", err);
+    });
+
+    child.on("close", (code) => {
+      console.log(`[Llama Manager Info] Processo llama-server finalizou com código: ${code}`);
+    });
+  } catch (err) {
+    console.error("[Llama Manager Error] Exceção disparada ao iniciar o processo:", err);
+  }
+}
+
 async function startServer() {
+  // Start llama-server immediately as the express dev/prod script begins
+  initLlamaServer();
+
   const app = express();
   const PORT = 3000;
 
@@ -221,57 +266,112 @@ async function startServer() {
     }
 
     let aiReply = "";
+    let fetchedFromLlama = false;
 
-    try {
-      if (ai) {
-        // Query Gemini with system context simulating a local llama.cpp environment
-        const systemInstruction = `
-          Você é o Agente de IA Local de Alta Performance rodando no servidor Linux do usuário via llama.cpp + banco de dados SQLite.
-          Suas respostas são enviadas para uma interface de chat premium estilo ChatGPT/OpenWebUI.
-          
-          Regras de Resposta:
-          1. Responda em português de forma natural, amigável e profissional.
-          2. Suas respostas devem conter formatação rica em Markdown (títulos, negrito, tabelas) quando apropriado.
-          3. Caso responda com códigos (de qualquer linguagem como Javascript, HTML, CSS, Python, JSON, Bash, Shell), utilize perfeitamente blocos markdown de código, especificando a respectiva linguagem (ex: \`\`\`python ... \`\`\`).
-          4. Adote um tom de assistente local rodando diretamente na máquina física dele. Se ele pedir para gerar arquivos ou executar tarefas do sistema, aja como se você tivesse executado ou tivesse suporte total de sistema operacional móvel/servidor.
-        `;
+    // Build OpenAI-compatible messaging sequence including full local history memory
+    const systemPrompt = `
+      Você é o Agente de IA Local de Alta Performance rodando no servidor Linux do usuário via llama.cpp + banco de dados SQLite.
+      Suas respostas são enviadas para uma interface de chat premium estilo ChatGPT/OpenWebUI.
+      
+      Regras de Resposta:
+      1. Responda em português de forma natural, amigável e profissional.
+      2. Suas respostas devem conter formatação rica em Markdown (títulos, negrito, tabelas) quando apropriado.
+      3. Caso responda com códigos (de qualquer linguagem como Javascript, HTML, CSS, Python, JSON, Bash, Shell), utilize perfeitamente blocos markdown de código, especificando a respectiva linguagem (ex: \`\`\`python ... \`\`\`).
+      4. Adote um tom de assistente local rodando diretamente na máquina física dele. Se ele pedir para gerar arquivos ou executar tarefas do sistema, aja como se você tivesse executado ou tivesse suporte total de sistema operacional móvel/servidor.
+    `;
 
-        let contents: any = message;
-        if (file && file.data) {
-          // If a file is uploaded, feed it to Gemini too as custom context or inline data
-          const isImage = file.type.startsWith("image/");
-          if (isImage) {
-            const base64Data = file.data.split(",")[1] || file.data;
-            contents = {
-              parts: [
-                { inlineData: { mimeType: file.type, data: base64Data } },
-                { text: `O usuário enviou esta imagem acompanhada de: "${message}"` }
-              ]
-            };
-          } else {
-            // Text or code file
-            contents = `O usuário anexou o arquivo "${file.name}" (conteúdo: "${file.data}").\nMensagem: ${message}`;
-          }
-        }
+    const messagesPayload: Array<{ role: string; content: string }> = [
+      { role: "system", content: systemPrompt }
+    ];
 
-        const genAIResponse = await ai.models.generateContent({
-          model: "gemini-3.5-flash",
-          contents,
-          config: {
-            systemInstruction,
-            temperature: 0.7,
-          }
-        });
-
-        aiReply = genAIResponse.text || "Sem resposta gerada.";
-      } else {
-        // Mock fallback to allow usage even when no core API key is given
-        console.log("Simulando resposta local offline...");
-        aiReply = getMockLocalResponse(message, file);
+    // Read full conversation history to feed memory context to modern llama.cpp/Qwen
+    conversation.messages.forEach((msg) => {
+      if (msg.user_message) {
+        messagesPayload.push({ role: "user", content: msg.user_message });
       }
-    } catch (error: any) {
-      console.error("Erro ao chamar o modelo:", error);
-      aiReply = `⚠️ **Erro de Comunicação Local**\nOcorreu um erro ao processar o seu prompt no llama.cpp local.\n\nDetalhes do erro: \`${error.message || error}\`\n\n*Nota: Certifique-se de que o backend está ativo e o arquivo do modelo GGUF foi carregado corretamente.*`;
+      if (msg.ai_response) {
+        messagesPayload.push({ role: "assistant", content: msg.ai_response });
+      }
+    });
+
+    // Append active user prompt (plus file metadata text to provide contextual understanding on Qwen)
+    let activePrompt = message;
+    if (file) {
+      activePrompt = `[Usuário anexou um arquivo chamado: "${file.name}" (tipo: ${file.type}, tamanho: ${file.size} bytes)]\n\nMensagem: ${message}`;
+    }
+    messagesPayload.push({ role: "user", content: activePrompt });
+
+    // 1️⃣ High Priority: Attempt reading from standard local llama.cpp server endpoint at 127.0.0.1:9090
+    try {
+      console.log("[Llama Manager] Tentando se conectar com o llama-server local em http://127.0.0.1:9090...");
+      const llamaResponse = await fetch("http://127.0.0.1:9090/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          model: "qwen2-1.5b",
+          messages: messagesPayload,
+          temperature: 0.7
+        }),
+        signal: AbortSignal.timeout(12000) // 12s connection timeout to secure fallbacks
+      });
+
+      if (llamaResponse.ok) {
+        const data = await llamaResponse.json() as any;
+        aiReply = data.choices?.[0]?.message?.content || "";
+        if (aiReply) {
+          fetchedFromLlama = true;
+          console.log("[Llama Manager] SUCESSO: Resposta obtida diretamente do llama.cpp local (Qwen)!");
+          simulatedTools.push({ icon: "⚡", label: "Processado localmente via llama.cpp (Porta 9090)" });
+        }
+      } else {
+        console.warn(`[Llama Manager] llama-server retornou status HTTP de erro: ${llamaResponse.status}`);
+      }
+    } catch (llamaError) {
+      console.log("[Llama Manager] llama-server local não pôde ser alcançado nesta requisição. Redirecionando para fallback...");
+    }
+
+    // 2️⃣ Fallback: If llama-server is not reachable (or if startup is taking a bit), fall back to Gemini or simulated response
+    if (!fetchedFromLlama) {
+      try {
+        if (ai) {
+          const systemInstruction = systemPrompt;
+          let contents: any = message;
+          if (file && file.data) {
+            const isImage = file.type.startsWith("image/");
+            if (isImage) {
+              const base64Data = file.data.split(",")[1] || file.data;
+              contents = {
+                parts: [
+                  { inlineData: { mimeType: file.type, data: base64Data } },
+                  { text: `O usuário enviou esta imagem acompanhada de: "${message}"` }
+                ]
+              };
+            } else {
+              contents = `O usuário anexou o arquivo "${file.name}" (conteúdo: "${file.data}").\nMensagem: ${message}`;
+            }
+          }
+
+          const genAIResponse = await ai.models.generateContent({
+            model: "gemini-3.5-flash",
+            contents,
+            config: {
+              systemInstruction,
+              temperature: 0.7,
+            }
+          });
+
+          aiReply = genAIResponse.text || "Sem resposta gerada.";
+          simulatedTools.push({ icon: "☁️", label: "Processado via nuvem hibrida (Falha de conexão GGUF local)" });
+        } else {
+          console.log("Simulando resposta local offline...");
+          aiReply = getMockLocalResponse(message, file);
+        }
+      } catch (error: any) {
+        console.error("Erro ao chamar o modelo de fallback:", error);
+        aiReply = `⚠️ **Erro de Comunicação Local**\nOcorreu um erro ao processar o seu prompt no llama.cpp local.\n\nDetalhes do erro: \`${error.message || error}\`\n\n*Nota: Certifique-se de que o backend está ativo e o arquivo do modelo GGUF foi carregado corretamente.*`;
+      }
     }
 
     // Add random basic tools if none were explicitly triggered to demonstrate the premium tool cards feature
