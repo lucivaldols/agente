@@ -220,26 +220,80 @@ export default function App() {
         })
       });
 
-      if (response.ok) {
-        const responseData = await response.json();
-        // Update local chat list visually
-        setMessages((prev) =>
-          prev.map((m) =>
-            m.id === temporaryUserMsg.id
-              ? {
-                  ...m,
-                  ai_response: responseData.reply,
-                  tools: responseData.tools,
-                  file: responseData.file || m.file
-                }
-              : m
-          )
-        );
-        // Refresh conversations in case title shifted
-        fetchConversations(activeConversationId);
-      } else {
-        throw new Error("Resposta de status inválida");
+      if (!response.ok) {
+        throw new Error(`Servidor respondeu com código de erro ${response.status}`);
       }
+
+      const reader = response.body?.getReader();
+      const decoder = new TextDecoder("utf-8");
+      if (!reader) {
+        throw new Error("Corpo da resposta do stream não está disponível.");
+      }
+
+      let doneReading = false;
+      let accumulatedResponse = "";
+      let currentTools: any[] = [];
+      let buffer = "";
+
+      while (!doneReading) {
+        const { value, done } = await reader.read();
+        doneReading = done;
+        if (value) {
+          buffer += decoder.decode(value, { stream: !doneReading });
+          const parts = buffer.split("\n\n");
+          buffer = parts.pop() || ""; // remainder of partial line
+
+          for (const part of parts) {
+            const trimmed = part.trim();
+            if (trimmed.startsWith("data: ")) {
+              const dataStr = trimmed.slice(6).trim();
+              try {
+                const parsed = JSON.parse(dataStr);
+                
+                if (parsed.type === "tools") {
+                  currentTools = parsed.tools || [];
+                  setMessages((prev) =>
+                    prev.map((m) =>
+                      m.id === temporaryUserMsg.id
+                        ? { ...m, tools: currentTools }
+                        : m
+                    )
+                  );
+                } else if (parsed.type === "content") {
+                  accumulatedResponse += parsed.content;
+                  setMessages((prev) =>
+                    prev.map((m) =>
+                      m.id === temporaryUserMsg.id
+                        ? { ...m, ai_response: accumulatedResponse }
+                        : m
+                    )
+                  );
+                } else if (parsed.type === "done") {
+                  const finalReply = parsed.reply || accumulatedResponse;
+                  const finalTools = parsed.tools || currentTools;
+                  setMessages((prev) =>
+                    prev.map((m) =>
+                      m.id === temporaryUserMsg.id
+                        ? {
+                            ...m,
+                            id: parsed.id || m.id,
+                            ai_response: finalReply,
+                            tools: finalTools
+                          }
+                        : m
+                    )
+                  );
+                }
+              } catch (e) {
+                // Ignore parsing chunk split issues
+              }
+            }
+          }
+        }
+      }
+
+      // Refresh conversations list in case title shifted
+      fetchConversations(activeConversationId);
     } catch (err: any) {
       console.error("Erro ao enviar mensagem:", err);
       setMessages((prev) =>

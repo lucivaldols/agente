@@ -248,6 +248,12 @@ async function startServer() {
       conversation.title = message.substring(0, 40) + (message.length > 40 ? "..." : "");
     }
 
+    // Set streaming and event headers immediately
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Connection", "keep-alive");
+    res.flushHeaders();
+
     // Prepare simulated tools based on prompt content
     const simulatedTools: Array<{ icon: string; label: string }> = [];
     const lowerMsg = message.toLowerCase();
@@ -267,6 +273,9 @@ async function startServer() {
     if (lowerMsg.includes("tempo") || lowerMsg.includes("clima") || lowerMsg.includes("previsao")) {
       simulatedTools.push({ icon: "☁️", label: "Ferramenta clima executada" });
     }
+
+    // Write initial tools back immediately
+    res.write(`data: ${JSON.stringify({ type: "tools", tools: simulatedTools })}\n\n`);
 
     let aiReply = "";
     let fetchedFromLlama = false;
@@ -305,7 +314,7 @@ async function startServer() {
     }
     messagesPayload.push({ role: "user", content: activePrompt });
 
-    // 1️⃣ High Priority: Attempt reading from standard local llama.cpp server endpoint at 127.0.0.1:9090
+    // 1️⃣ High Priority: Attempt reading with continuous stream from standard local llama.cpp server endpoint at port selectedPort
     const controller = new AbortController();
     const timeoutId = setTimeout(() => {
       try {
@@ -314,7 +323,7 @@ async function startServer() {
     }, 120000); // 120 seconds for low-latency/longer CPU processing on mobile devices safely
 
     try {
-      console.log(`[Llama Manager] Tentando se conectar com o llama-server local em http://127.0.0.1:${selectedPort}...`);
+      console.log(`[Llama Manager] Tentando se conectar com stream do llama-server local em http://127.0.0.1:${selectedPort}...`);
       const llamaResponse = await fetch(`http://127.0.0.1:${selectedPort}/v1/chat/completions`, {
         method: "POST",
         headers: {
@@ -323,31 +332,73 @@ async function startServer() {
         body: JSON.stringify({
           model: selectedModel,
           messages: messagesPayload,
-          temperature: 0.7
+          temperature: 0.7,
+          stream: true // Enable streaming at server level
         }),
         signal: controller.signal
       });
 
       clearTimeout(timeoutId);
 
-      if (llamaResponse.ok) {
-        const data = await llamaResponse.json() as any;
-        aiReply = data.choices?.[0]?.message?.content || "";
-        if (aiReply) {
-          fetchedFromLlama = true;
-          console.log(`[Llama Manager] SUCESSO: Resposta obtida diretamente do llama.cpp local (${selectedModel})!`);
-          simulatedTools.push({ icon: "⚡", label: `Processado localmente via llama.cpp (Porta ${selectedPort})` });
+      if (llamaResponse.ok && llamaResponse.body) {
+        fetchedFromLlama = true;
+        simulatedTools.push({ icon: "⚡", label: `Processado localmente via llama.cpp (Porta ${selectedPort})` });
+        res.write(`data: ${JSON.stringify({ type: "tools", tools: simulatedTools })}\n\n`);
+
+        const reader = llamaResponse.body;
+        let buffer = "";
+
+        for await (const chunk of reader as any) {
+          buffer += chunk.toString("utf8");
+          const lines = buffer.split("\n");
+          buffer = lines.pop() || ""; // remainder
+
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (trimmed.startsWith("data: ")) {
+              const dataStr = trimmed.slice(6).trim();
+              if (dataStr === "[DONE]") {
+                continue;
+              }
+              try {
+                const parsed = JSON.parse(dataStr);
+                const char = parsed.choices?.[0]?.delta?.content || "";
+                if (char) {
+                  aiReply += char;
+                  res.write(`data: ${JSON.stringify({ type: "content", content: char })}\n\n`);
+                }
+              } catch (e) {
+                // partial chunk skip gracefully
+              }
+            }
+          }
         }
+
+        // flush final remaining buffer line
+        if (buffer.trim().startsWith("data: ")) {
+          const dataStr = buffer.trim().slice(6).trim();
+          if (dataStr !== "[DONE]") {
+            try {
+              const parsed = JSON.parse(dataStr);
+              const char = parsed.choices?.[0]?.delta?.content || "";
+              if (char) {
+                aiReply += char;
+                res.write(`data: ${JSON.stringify({ type: "content", content: char })}\n\n`);
+              }
+            } catch (e) {}
+          }
+        }
+        console.log(`[Llama Manager] SUCESSO: Stream completado de llama-server (${selectedModel})!`);
       } else {
-        console.warn(`[Llama Manager] llama-server retornou status HTTP de erro: ${llamaResponse.status}`);
+        console.warn(`[Llama Manager] llama-server retornou status HTTP de erro ou no body: ${llamaResponse.status}`);
       }
     } catch (llamaError: any) {
       clearTimeout(timeoutId);
-      console.error("[Llama Manager Fetch Error]:", llamaError);
-      console.log("[Llama Manager] llama-server local não pôde ser alcançado nesta requisição. Redirecionando para fallback...");
+      console.error("[Llama Manager Fetch Stream Error]:", llamaError);
+      console.log("[Llama Manager] llama-server local não pôde ser alcançado nesta requisição de streaming. Redirecionando para fallback...");
     }
 
-    // 2️⃣ Fallback: If llama-server is not reachable (or if startup is taking a bit), fall back to Gemini or simulated response
+    // 2️⃣ Fallback: If llama-server is not reachable, stream fallback response
     if (!fetchedFromLlama) {
       try {
         if (ai) {
@@ -368,7 +419,10 @@ async function startServer() {
             }
           }
 
-          const genAIResponse = await ai.models.generateContent({
+          simulatedTools.push({ icon: "☁️", label: "Processado via nuvem hibrida (Falha de conexão GGUF local)" });
+          res.write(`data: ${JSON.stringify({ type: "tools", tools: simulatedTools })}\n\n`);
+
+          const genAIResponseStream = await ai.models.generateContentStream({
             model: "gemini-3.5-flash",
             contents,
             config: {
@@ -377,27 +431,37 @@ async function startServer() {
             }
           });
 
-          aiReply = genAIResponse.text || "Sem resposta gerada.";
-          simulatedTools.push({ icon: "☁️", label: "Processado via nuvem hibrida (Falha de conexão GGUF local)" });
+          for await (const chunk of genAIResponseStream) {
+            const char = chunk.text || "";
+            if (char) {
+              aiReply += char;
+              res.write(`data: ${JSON.stringify({ type: "content", content: char })}\n\n`);
+            }
+          }
         } else {
-          console.log("Simulando resposta local offline...");
-          aiReply = getMockLocalResponse(message, file);
+          console.log("Simulando resposta local offline em tempo real...");
+          const fullMock = getMockLocalResponse(message, file);
+          
+          // Split mock responses into small units to type beautifully
+          const mockChunks = fullMock.match(/[^ ]+ *| +/g) || [fullMock];
+          for (const element of mockChunks) {
+            aiReply += element;
+            res.write(`data: ${JSON.stringify({ type: "content", content: element })}\n\n`);
+            await new Promise((resolve) => setTimeout(resolve, 30));
+          }
         }
       } catch (error: any) {
-        console.error("Erro ao chamar o modelo de fallback:", error);
-        aiReply = `⚠️ **Erro de Comunicação Local**\nOcorreu um erro ao processar o seu prompt no llama.cpp local.\n\nDetalhes do erro: \`${error.message || error}\`\n\n*Nota: Certifique-se de que o backend está ativo e o arquivo do modelo GGUF foi carregado corretamente.*`;
+        console.error("Erro ao chamar o fallback em streaming:", error);
+        const errText = `⚠️ **Erro de Comunicação Local**\nOcorreu um erro ao processar o seu prompt no llama.cpp local.\n\nDetalhes do erro: \`${error.message || error}\`\n\n*Nota: Certifique-se de que o backend está ativo e o arquivo do modelo GGUF foi carregado corretamente na porta correspondente.*`;
+        aiReply = errText;
+        res.write(`data: ${JSON.stringify({ type: "content", content: errText })}\n\n`);
       }
     }
 
-    // Add random basic tools if none were explicitly triggered to demonstrate the premium tool cards feature
-    if (simulatedTools.length === 0 && Math.random() > 0.6) {
-      const defaultTools = [
-        { icon: "🧠", label: "Memória SQLite atualizada" },
-        { icon: "⚙️", label: "Contexto recuperado do SQLite" },
-        { icon: "⚡", label: "llama.cpp velocidade: 42.5 Tok/s" }
-      ];
-      const randomTool = defaultTools[Math.floor(Math.random() * defaultTools.length)];
-      simulatedTools.push(randomTool);
+    // Add extra decorative tools if empty
+    if (simulatedTools.length === 0) {
+      simulatedTools.push({ icon: "🧠", label: "Memória SQLite atualizada" });
+      res.write(`data: ${JSON.stringify({ type: "tools", tools: simulatedTools })}\n\n`);
     }
 
     // Save message pair in database
@@ -413,13 +477,9 @@ async function startServer() {
     conversation.messages.push(newMsg);
     writeDB(db);
 
-    // Return exact model structure {"reply": "..."} plus extra visual fields
-    res.json({
-      reply: aiReply,
-      id: newMsg.id,
-      tools: newMsg.tools,
-      file: newMsg.file
-    });
+    // Send final done signal carrying full metadata for instant synchronization
+    res.write(`data: ${JSON.stringify({ type: "done", id: newMsg.id, reply: aiReply, tools: simulatedTools })}\n\n`);
+    res.end();
   });
 
   // ==========================================
