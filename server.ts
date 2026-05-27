@@ -12,7 +12,7 @@ import { GoogleGenAI } from "@google/genai";
 import { createServer as createViteServer } from "vite";
 
 // Local JSON DB file paths to simulate SQLite persistence
-const DB_PATH = path.join(process.cwd(), "chat_history.json");
+const DB_PATH = path.join(os.homedir(), "chat_history.json");
 
 interface Message {
   id: string;
