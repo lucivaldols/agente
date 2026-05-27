@@ -87,8 +87,8 @@ function initLlamaServer() {
   console.log("[Llama Manager] Iniciando llama-server local em segundo plano...");
   
   // Exact user command requested:
-  // cd ~/llama.cpp && ./build/bin/llama-server -m ~/models/tinyllama.gguf --host 127.0.0.1 --port 8080 -t 8 -c 1024 --flash-attn on
-  const llamaCommandLine = `cd ~/llama.cpp && ./build/bin/llama-server -m ~/models/tinyllama.gguf --host 127.0.0.1 --port 8080 -t 8 -c 1024 --flash-attn on`;
+  // cd ~/llama.cpp && ./build/bin/llama-server -m ~/models/tinyllama.gguf --host 127.0.0.1 --port 8080 -t 4 -c 512 -np 1 --flash-attn on
+  const llamaCommandLine = `cd ~/llama.cpp && ./build/bin/llama-server -m ~/models/tinyllama.gguf --host 127.0.0.1 --port 8080 -t 4 -c 512 -np 1 --flash-attn on`;
   
   try {
     const llamaChild = spawn(llamaCommandLine, {
@@ -287,8 +287,9 @@ async function startServer() {
       { role: "system", content: systemPrompt }
     ];
 
-    // Read full conversation history to feed memory context to modern llama.cpp/Qwen
-    conversation.messages.forEach((msg) => {
+    // Read sliced conversation history (last 4 messages) to feed memory context efficiently on mobile without slowing down
+    const recentMessages = conversation.messages.slice(-4);
+    recentMessages.forEach((msg) => {
       if (msg.user_message) {
         messagesPayload.push({ role: "user", content: msg.user_message });
       }
@@ -310,7 +311,7 @@ async function startServer() {
       try {
         controller.abort();
       } catch (err) {}
-    }, 60000); // 60 seconds is recommended for CPU local inference (qwen2-1.5b takes time on initial runs)
+    }, 120000); // 120 seconds for low-latency/longer CPU processing on mobile devices safely
 
     try {
       console.log(`[Llama Manager] Tentando se conectar com o llama-server local em http://127.0.0.1:${selectedPort}...`);
