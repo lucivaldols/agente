@@ -4,7 +4,8 @@
  */
 
 import React from "react";
-import { MessageSquare, Plus, Trash2, Cpu, Database, Wifi } from "lucide-react";
+import { MessageSquare, Plus, Trash2, Cpu, Database, Wifi, Award, BookOpen, AlertTriangle, RotateCcw, ShieldCheck } from "lucide-react";
+import { UserProgress } from "../types";
 
 interface SidebarProps {
   conversations: Array<{ id: string; title: string; createdAt: string }>;
@@ -14,6 +15,8 @@ interface SidebarProps {
   onDeleteChat: (id: string, e: React.MouseEvent) => void;
   isOpen: boolean;
   onClose: () => void;
+  userProgress: UserProgress | null;
+  onResetProgress: () => void;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -24,6 +27,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onDeleteChat,
   isOpen,
   onClose,
+  userProgress,
+  onResetProgress,
 }) => {
   return (
     <>
@@ -64,7 +69,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           <button
             onClick={() => {
               onNewChat();
-              onClose();
+               onClose();
             }}
             className="w-full flex items-center justify-between gap-2 px-3 py-2.5 bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl transition-all active:scale-[0.98] text-sm font-medium text-white cursor-pointer"
           >
@@ -120,6 +125,96 @@ export const Sidebar: React.FC<SidebarProps> = ({
             })
           )}
         </div>
+
+        {/* Student Evolution Panel */}
+        {userProgress && (
+          <div className="mx-3 my-2 p-3.5 bg-white/[0.02] border border-white/5 rounded-xl flex flex-col gap-2.5 flex-shrink-0">
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] uppercase font-bold text-slate-500 tracking-wider flex items-center gap-1.5">
+                <ShieldCheck size={12} className="text-emerald-400" /> Evolução do Aluno
+              </span>
+              <button 
+                onClick={onResetProgress}
+                title="Resetar ficha de evolução"
+                className="p-1 rounded text-slate-500 hover:text-rose-400 hover:bg-rose-500/10 transition-all cursor-pointer"
+              >
+                <RotateCcw size={11} />
+              </button>
+            </div>
+
+            {/* Level Badge and Progress Indicator */}
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-1.5">
+                {userProgress.level === "iniciante" && (
+                  <span className="px-2 py-0.5 text-[9px] font-bold rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 uppercase tracking-widest flex items-center gap-1">
+                    <span className="w-1 h-1 rounded-full bg-emerald-400 animate-pulse" /> Iniciante
+                  </span>
+                )}
+                {userProgress.level === "intermediário" && (
+                  <span className="px-2 py-0.5 text-[9px] font-bold rounded bg-blue-500/10 text-blue-400 border border-blue-500/20 uppercase tracking-widest flex items-center gap-1">
+                    <span className="w-1 h-1 rounded-full bg-blue-400 animate-pulse" /> Intermediário
+                  </span>
+                )}
+                {userProgress.level === "avançado" && (
+                  <span className="px-2 py-0.5 text-[9px] font-bold rounded bg-amber-500/10 text-amber-400 border border-amber-500/20 uppercase tracking-widest flex items-center gap-1">
+                    <span className="w-1 h-1 rounded-full bg-amber-400 animate-pulse" /> Avançado
+                  </span>
+                )}
+              </div>
+              <span className="text-[10px] font-mono font-medium text-slate-400">
+                {userProgress.level === "iniciante" ? "33%" : userProgress.level === "intermediário" ? "66%" : "100%"}
+              </span>
+            </div>
+
+            {/* Custom progress bar */}
+            <div className="w-full bg-white/5 h-1.5 rounded-full overflow-hidden">
+              <div 
+                className={`h-full transition-all duration-500 ease-out rounded-full ${
+                  userProgress.level === "iniciante" 
+                    ? "bg-emerald-500 w-1/3" 
+                    : userProgress.level === "intermediário" 
+                      ? "bg-blue-500 w-2/3" 
+                      : "bg-amber-500 w-full"
+                }`}
+              />
+            </div>
+
+            {/* Content Active Study */}
+            <div className="flex items-start gap-1.5 pt-0.5">
+              <BookOpen size={12} className="text-slate-400 mt-0.5 flex-shrink-0" />
+              <div className="flex-1 min-w-0">
+                <div className="text-[9px] text-slate-500 font-mono">Tópico Ativo</div>
+                <div className="text-xs font-semibold text-slate-200 truncate">{userProgress.topic || "Lógica Geral"}</div>
+              </div>
+            </div>
+
+            {/* Stats count grid */}
+            <div className="grid grid-cols-2 gap-1.5 pt-0.5 text-[11px]">
+              {/* Medalhas/Conquistas count */}
+              <div className="px-2 py-1.5 bg-white/[0.01] border border-white/5 rounded-lg flex flex-col justify-center">
+                <span className="text-[8px] text-slate-500 font-mono uppercase tracking-wide">🏆 Conquistas</span>
+                <span className="font-bold text-slate-200 font-sans flex items-center gap-1 mt-0.5">
+                  <Award size={12} className="text-amber-400 flex-shrink-0" /> {userProgress.achievements?.length || 0}
+                </span>
+              </div>
+              
+              {/* Dificuldades count */}
+              <div className="px-2 py-1.5 bg-white/[0.01] border border-white/5 rounded-lg flex flex-col justify-center">
+                <span className="text-[8px] text-slate-500 font-mono uppercase tracking-wide">⚠️ Erros</span>
+                <span className="font-bold text-slate-250 font-sans flex items-center gap-1 mt-0.5">
+                  <AlertTriangle size={12} className={userProgress.mistakes?.length > 0 ? "text-rose-400 flex-shrink-0" : "text-slate-500 flex-shrink-0"} /> {userProgress.mistakes?.length || 0}
+                </span>
+              </div>
+            </div>
+
+            {/* Last Award text */}
+            {userProgress.achievements && userProgress.achievements.length > 0 && (
+              <div className="text-[9px] text-slate-400 truncate border-t border-white/5 pt-2 font-mono flex items-center gap-1">
+                <span className="text-amber-400">★</span> {userProgress.achievements[userProgress.achievements.length - 1]}
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Hardware Status Footer Panel */}
         <div className="p-4 border-t border-white/5 bg-[#171717] space-y-2 flex-shrink-0">

@@ -33,3 +33,13 @@ export interface Conversation {
   lastMessage?: string;
   messages: Message[];
 }
+
+export interface UserProgress {
+  id: string;
+  topic: string;
+  level: "iniciante" | "intermediário" | "avançado";
+  last_interaction: string;
+  mistakes: string[];
+  achievements: string[];
+  notes: string;
+}

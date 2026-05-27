@@ -35,6 +35,7 @@ export default function App() {
   const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [dragActive, setDragActive] = useState<boolean>(false);
+  const [userProgress, setUserProgress] = useState<any>(null);
 
   const [configPort, setConfigPort] = useState<number>(() => {
     const saved = localStorage.getItem("llama_port");
@@ -56,6 +57,45 @@ export default function App() {
   const chatEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Load user progress profile from SQLite database
+  const fetchProgress = async () => {
+    try {
+      const res = await fetch("/api/user-progress");
+      if (res.ok) {
+        const data = await res.json();
+        setUserProgress(data);
+      }
+    } catch (err) {
+      console.error("Erro ao obter progresso do SQLite:", err);
+    }
+  };
+
+  // Reset progress database back to initiator baseline values
+  const handleResetProgress = async () => {
+    if (!confirm("Tem certeza que deseja resetar o seu progresso e histórico de aprendizado no SQLite?")) {
+      return;
+    }
+    try {
+      const res = await fetch("/api/user-progress", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          topic: "Lógica Geral",
+          level: "iniciante",
+          mistakes: [],
+          achievements: ["Iniciou a jornada de aprendizado"],
+          notes: "Ficha de progresso reiniciada pelo usuário."
+        })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setUserProgress(data);
+      }
+    } catch (err) {
+      console.error("Erro ao resetar progresso:", err);
+    }
+  };
 
   // Load chat session list from backend SQLite proxy
   const fetchConversations = async (selectActiveId?: string) => {
@@ -90,6 +130,7 @@ export default function App() {
   // Run on startup
   useEffect(() => {
     fetchConversations();
+    fetchProgress();
   }, []);
 
   // Sync conversation content when selection updates
@@ -261,23 +302,25 @@ export default function App() {
                   );
                 } else if (parsed.type === "content") {
                   accumulatedResponse += parsed.content;
+                  const visibleResponse = accumulatedResponse.split("[UPDATE_PROGRESS]")[0];
                   setMessages((prev) =>
                     prev.map((m) =>
                       m.id === temporaryUserMsg.id
-                        ? { ...m, ai_response: accumulatedResponse }
+                        ? { ...m, ai_response: visibleResponse }
                         : m
                     )
                   );
                 } else if (parsed.type === "done") {
                   const finalReply = parsed.reply || accumulatedResponse;
                   const finalTools = parsed.tools || currentTools;
+                  const visibleFinalReply = finalReply.split("[UPDATE_PROGRESS]")[0];
                   setMessages((prev) =>
                     prev.map((m) =>
                       m.id === temporaryUserMsg.id
                         ? {
                             ...m,
                             id: parsed.id || m.id,
-                            ai_response: finalReply,
+                            ai_response: visibleFinalReply,
                             tools: finalTools
                           }
                         : m
@@ -294,6 +337,7 @@ export default function App() {
 
       // Refresh conversations list in case title shifted
       fetchConversations(activeConversationId);
+      fetchProgress();
     } catch (err: any) {
       console.error("Erro ao enviar mensagem:", err);
       setMessages((prev) =>
@@ -358,6 +402,8 @@ export default function App() {
         onDeleteChat={handleDeleteChat}
         isOpen={isSidebarOpen}
         onClose={() => setIsSidebarOpen(false)}
+        userProgress={userProgress}
+        onResetProgress={handleResetProgress}
       />
 
       {/* Main chat window container */}

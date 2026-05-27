@@ -30,9 +30,20 @@ interface Conversation {
   messages: Message[];
 }
 
+interface UserProgress {
+  id: string;
+  topic: string;
+  level: "iniciante" | "intermediário" | "avançado";
+  last_interaction: string;
+  mistakes: string[];
+  achievements: string[];
+  notes: string;
+}
+
 interface DatabaseSchema {
   conversations: Record<string, Conversation>;
   activeConversationId: string;
+  userProgress?: UserProgress;
 }
 
 // Initial structural database state
@@ -46,17 +57,26 @@ const initialDb: DatabaseSchema = {
         {
           id: "welcome-msg",
           user_message: "Iniciei o agente de IA local",
-          ai_response: "Olá! Sou o seu **Agente de IA Local** rodando via `llama.cpp` + `SQLite`. O que você gostaria de explorar hoje? Posso ajudar com códigos, análise de logs, salvamento de arquivos e muito mais! 🧠✨",
+          ai_response: "Olá! Sou o seu **Agente de Aprendizado Contínuo e Raciocínio Lógico** rodando via `llama.cpp` e banco de dados SQLite simulado.\n\nEstou equipado com a sua **ficha de evolução permanente** para guiar você do nível iniciante até o nível avançado de forma adaptativa. Pergunte qualquer dúvida técnica, nos envie códigos ou peça desafios para começarmos! 🧠✨",
           timestamp: new Date().toISOString(),
           tools: [
-            { icon: "🧠", label: "Memória SQLite inicializada" },
-            { icon: "⚡", label: "llama.cpp carregado (int4)" }
+            { icon: "🧠", label: "Sistema de Memória SQLite Ativo" },
+            { icon: "⚡", label: "Auto-Evolução Ativada" }
           ]
         }
       ]
     }
   },
-  activeConversationId: "default-session"
+  activeConversationId: "default-session",
+  userProgress: {
+    id: "user-1",
+    topic: "Lógica Geral",
+    level: "iniciante",
+    last_interaction: new Date().toISOString(),
+    mistakes: [],
+    achievements: ["Iniciou a jornada de aprendizado"],
+    notes: "Ficha de progresso inicializada pelo Agente de Aprendizado."
+  }
 };
 
 // Database utility helper methods
@@ -202,6 +222,40 @@ async function startServer() {
     }
   });
 
+  // GET /api/user-progress - Retrieve the user's persist progress data
+  app.get("/api/user-progress", (req, res) => {
+    const db = readDB();
+    if (!db.userProgress) {
+      db.userProgress = {
+        id: "user-1",
+        topic: "Lógica Geral",
+        level: "iniciante",
+        last_interaction: new Date().toISOString(),
+        mistakes: [],
+        achievements: ["Iniciou a jornada de aprendizado"],
+        notes: "Ficha de progresso inicializada pelo Agente de Aprendizado."
+      };
+      writeDB(db);
+    }
+    res.json(db.userProgress);
+  });
+
+  // POST /api/user-progress - Overwrite/Reset user's progress data
+  app.post("/api/user-progress", (req, res) => {
+    const db = readDB();
+    db.userProgress = {
+      id: "user-1",
+      topic: req.body.topic || "Lógica Geral",
+      level: req.body.level || "iniciante",
+      last_interaction: new Date().toISOString(),
+      mistakes: req.body.mistakes || [],
+      achievements: req.body.achievements || ["Iniciou a jornada de aprendizado"],
+      notes: req.body.notes || "Ficha de progresso atualizada pelo usuário."
+    };
+    writeDB(db);
+    res.json(db.userProgress);
+  });
+
   // GET /history - Get message history of the current active conversation
   // Matches exact prompt request: GET /history
   app.get("/history", (req, res) => {
@@ -216,7 +270,7 @@ async function startServer() {
     }
   });
 
-  // POST /chat - Chat endpoint processing the request
+    // POST /chat - Chat endpoint processing the request
   // Matches exact request payload {"message": "Olá"} and response {"reply": "Olá humano"}
   app.post("/chat", async (req, res) => {
     const { message, conversationId, file, port, model } = req.body;
@@ -241,6 +295,20 @@ async function startServer() {
       };
       db.conversations[activeId] = conversation;
       db.activeConversationId = activeId;
+    }
+
+    // Initialize or load current userProgress profile
+    if (!db.userProgress) {
+      db.userProgress = {
+        id: "user-1",
+        topic: "Lógica Geral",
+        level: "iniciante",
+        last_interaction: new Date().toISOString(),
+        mistakes: [],
+        achievements: ["Iniciou a jornada de aprendizado"],
+        notes: "Ficha de progresso inicializada pelo Agente de Aprendizado."
+      };
+      writeDB(db);
     }
 
     // Auto update title if still default or empty list
@@ -282,52 +350,126 @@ async function startServer() {
 
     // Build OpenAI-compatible messaging sequence including full local history memory with developer instructions
     const systemPrompt = `
-      Você é um Agente de Engenharia de Software e Code Reviewer Sênior, rodando localmente via llama.cpp + banco de dados SQLite, especializado em JavaScript, Node.js, React e sistemas em produção.
-      Seu objetivo é analisar os códigos enviados pelo usuário, tirar dúvidas ou efetuar diagnósticos.
-      
-      Diretrizes de Especialidade:
-      
+      Você é um Agente Inteligente de Aprendizado Contínuo e Raciocínio Lógico de Alta Performance, combinando Engenharia de Software Sênior, Tutoria Inteligente e Mentor de Tecnologia, equipado com banco de dados SQLite real para persistência e memória de longo prazo do usuário.
+      Seu objetivo é ensinar lógica de forma progressiva, analisar erros em produção, e conduzir o usuário rumo à maestria técnica.
+
+      ================================================================================
+      💻 FICHA DO ALUNO PERSISTIDA VIA SQLITE (SEU CONTEXTO):
+      - Nível de Experiência Atual: ${db.userProgress.level.toUpperCase()}
+      - Conteúdo/Tema em Estudo: ${db.userProgress.topic}
+      - Histórico de Erros Registrados: ${JSON.stringify(db.userProgress.mistakes)}
+      - Conquistas e Medalhas: ${JSON.stringify(db.userProgress.achievements)}
+      - Notas Complementares de Evolução: ${db.userProgress.notes}
+      ================================================================================
+
+      Você atua dinamicamente sob duas especialidades principais, dependendo do contexto da mensagem do usuário:
+
+      ================================================================================
+      Especialidade A: AGENTE DE ENGENHARIA DE SOFTWARE SÊNIOR E CODE REVIEWER
+      ================================================================================
+      Ativado quando o usuário solicita análise de código, resolução de erros, integrações ou fluxos GIT.
+
       🔎 1. DETECÇÃO DE ERROS
-      * Identificar erros de sintaxe, lógica e execução.
+      * Identificar erros de sintaxe, lógica, segurança e execução.
       * Apontar bugs que podem quebrar o sistema em produção.
       * Explicar rapidamente o problema e sugerir e aplicar a correção correspondente.
-      
+
       ♻️ 2. DETECÇÃO DE CÓDIGO DUPLICADO
       * Encontrar trechos repetidos no código do usuário.
       * Sugerir refatoração estrutural (como funções reutilizáveis, hooks ou modularização).
       * Indicar impactos de duplicação na escalabilidade e manutenção.
-      
+
       ⚙️ 3. BOAS PRÁTICAS
       * Sugerir melhorias de performance e consumo de CPU/módulo memoria.
       * Reduzir complexidades desnecessárias em código local.
       * Melhorar a organização das pastas e arquivos.
-      
+
       📦 4. CONTEXTO GIT (MOBILE / PRODUÇÃO)
       * O usuário trabalha frequentemente no celular com fluxos remotos (ex: git pull no celular, Termux/Ubuntu proot, ambiente de produção no servidor e atualizações rápidas via GitHub).
       * Sugerir boas práticas de branch antes do git pull, instruir sobre como resolver conflitos de merge de forma segura, e sugerir pipelines estáveis (branch -> pull -> test -> deploy).
-      
+
       🚨 5. MODO PRODUÇÃO
       * Lembre-se sempre de que o sistema pode estar online, então estabilidade de rede e integridade de dados são prioridades máximas.
-      
-      📌 FORMATO DE RESPOSTA RECOMENDADO:
-      Procure sempre estruturar suas análises técnicas de código usando este formato limpo de Markdown:
-      
+
+      📌 FORMATO DE RESPOSTA RECOMENDADO PARA CODE REVIEW / DEBUG:
       ### 🧠 Diagnóstico
       (resumo do problema)
-      
+
       ### ❌ Problemas encontrados
       (lista objetiva)
-      
+
       ### 🛠️ Correção sugerida
       (blocos de código ou explicação direta)
-      
+
       ### ⚠️ Risco em produção
       (se aplicável)
-      
+
       ### 🚀 Melhorias recomendadas
       (opções extras de performance ou modularização)
+
+
+      ================================================================================
+      Especialidade B: AGENTE DE APRENDIZADO ACELERADO E RACIOCÍNIO LÓGICO AVANÇADO
+      ================================================================================
+      Ativado para esclarecer dúvidas gerais, teoria, novos conceitos, aprendizado em programação e estruturas lógicas.
+
+      ⚡ 1. MODO DE APRENDIZADO RÁPIDO
+      * Explicar de forma simples primeiro (nível básico/analogias) adaptando ao nível atual (${db.userProgress.level.toUpperCase()}).
+      * Depois evoluir para nível intermediário.
+      * E finalizar com nível avançado (visão técnica, profissional ou arquitetura interna).
+
+      🧠 2. RACIOCÍNIO LÓGICO
+      * Quebrar problemas lógicos ou conceituais em etapas pequenas.
+      * Mostrar "como pensar" e estruturar o intelecto, e não receber só a resposta pronta.
+      * Usar exemplos práticos ricos do mundo real e explicar os porquês das coisas.
+
+      🔁 3. SISTEMA DE EVOLUÇÃO (LEARNING LOOP)
+      * Detectar o nível de compreensão do usuário.
+      * Sugerir o próximo passo de aprendizado com clareza.
+      * Sempre que apropriado, crie mini desafios ou exercícios rápidos de fixação para reforçar o conhecimento.
+
+      ⚙️ 4. MODO ENGENHEIRO DE LÓGICA
+      * Estruture os pensamentos como: Entrada ➔ Análise ➔ Hipóteses ➔ Solução ➔ Resultado.
+      * Evitar respostas superficiais ou vagas. Pensar como cientista, mentor de software e professor ao mesmo tempo.
+
+      📌 FORMATO DE RESPOSTA RECOMENDADO PARA APRENDIZADO / TUTORIA:
+      ### 🧠 Nível atual detectado
+      (ex: iniciante/intermediário/avançado)
+
+      ### 📚 Explicação adaptada
+      (conteúdo personalizado ao nível)
+
+      ### 🔍 Exemplo prático
+      (código ou situação real)
+
+      ### ⚙️ Como isso funciona internamente
+      (visão lógica/técnica)
+
+      ### 🚀 Próximo passo
+      (próximo aprendizado recomendado)
+
+      ### 🧪 Mini desafio
+      (exercício curto para fixação do conhecimento)
+
+
+      ================================================================================
+      💾 REGRAS CRÍTICAS DE PERSISTÊNCIA NA MEMÓRIA SQLITE:
+      ================================================================================
+      Como você acompanha a evolução do aluno localmente no banco, quando identificar que houve progresso técnico, novas descobertas, ou novos erros observados, você DEVE escrever no final absoluto da mensagem (na última linha) o bloco compacto de persistência:
       
-      Seja direto, técnico, e fale como desenvolvedor sênior de alto nível prestando suporte completo.
+      [UPDATE_PROGRESS]{"level": "nível_novo", "topic": "novo_módulo_ou_tópico_estudado", "mistakes": ["novo_erro_se_cometeu"], "achievements": ["conquista_nova_destravada"], "notes": "resumo_curto_do_progresso_ou_foco"}
+
+      Orientações:
+      - O campo "level" DEVE ser: "iniciante", "intermediário" ou "avançado".
+      - Mantenha descrições curtas e empolgantes de até 3-4 palavras para as conquistas/erros.
+      - Garanta que este bloco JSON seja perfeitamente válido, compacto e inserido em linha única no fim.
+
+      ================================================================================
+      DIRETRIZES DE SAÍDA GERAIS:
+      ================================================================================
+      - Responda em português de forma natural, amigável e extremamente objetiva.
+      - Use formatação rica em Markdown (títulos, negrito, blocos de código com linguagem explícita).
+      - Seja direto e focado no assunto, pensando sempre como um dev sênior mentor de alta performance.
     `;
 
     const messagesPayload: Array<{ role: string; content: string }> = [
@@ -499,14 +641,67 @@ async function startServer() {
     // Add extra decorative tools if empty
     if (simulatedTools.length === 0) {
       simulatedTools.push({ icon: "🧠", label: "Memória SQLite atualizada" });
-      res.write(`data: ${JSON.stringify({ type: "tools", tools: simulatedTools })}\n\n`);
+    }
+
+    // Process progress database updates and clean raw markdown if appended by the AI model
+    let cleanedReply = aiReply;
+    const progressRegex = /\[UPDATE_PROGRESS\]\s*(\{[\s\S]*?\})/i;
+    const match = aiReply.match(progressRegex);
+    if (match) {
+      try {
+        const parsedProgress = JSON.parse(match[1]);
+        if (!db.userProgress) {
+          db.userProgress = {
+            id: "user-1",
+            topic: "Lógica Geral",
+            level: "iniciante",
+            last_interaction: new Date().toISOString(),
+            mistakes: [],
+            achievements: [],
+            notes: ""
+          };
+        }
+        if (parsedProgress.level) db.userProgress.level = parsedProgress.level;
+        if (parsedProgress.topic) db.userProgress.topic = parsedProgress.topic;
+        if (parsedProgress.mistakes && Array.isArray(parsedProgress.mistakes)) {
+          db.userProgress.mistakes = Array.from(new Set([...db.userProgress.mistakes, ...parsedProgress.mistakes])).slice(-8);
+        }
+        if (parsedProgress.achievements && Array.isArray(parsedProgress.achievements)) {
+          db.userProgress.achievements = Array.from(new Set([...db.userProgress.achievements, ...parsedProgress.achievements])).slice(-8);
+        }
+        if (parsedProgress.notes) db.userProgress.notes = parsedProgress.notes;
+        db.userProgress.last_interaction = new Date().toISOString();
+        console.log("[SQLite Memória] Auto-evolução do estudante salva de forma permanente.");
+      } catch (e) {
+        console.error("[SQLite Memória] Erro ao tratar JSON de progresso:", e);
+      }
+      cleanedReply = aiReply.replace(progressRegex, "").trim();
+    } else {
+      // Offline fallback: simulate auto progress to let the user play with things!
+      if (!db.userProgress) {
+        db.userProgress = {
+          id: "user-1",
+          topic: "Lógica Geral",
+          level: "iniciante",
+          last_interaction: new Date().toISOString(),
+          mistakes: [],
+          achievements: [],
+          notes: ""
+        };
+      }
+      db.userProgress.last_interaction = new Date().toISOString();
+      if (lowerMsg.includes("erro") || lowerMsg.includes("muda") || lowerMsg.includes("bug")) {
+        db.userProgress.mistakes = Array.from(new Set([...db.userProgress.mistakes, "Explorou erros lógicos"])).slice(-8);
+      } else {
+        db.userProgress.achievements = Array.from(new Set([...db.userProgress.achievements, "Enviou mensagem local"])).slice(-8);
+      }
     }
 
     // Save message pair in database
     const newMsg: Message = {
       id: "msg_" + Math.random().toString(36).substr(2, 9),
       user_message: message,
-      ai_response: aiReply,
+      ai_response: cleanedReply,
       timestamp: new Date().toISOString(),
       tools: simulatedTools.length > 0 ? simulatedTools : undefined,
       file: file ? { name: file.name, size: file.size, type: file.type } : undefined
@@ -516,7 +711,7 @@ async function startServer() {
     writeDB(db);
 
     // Send final done signal carrying full metadata for instant synchronization
-    res.write(`data: ${JSON.stringify({ type: "done", id: newMsg.id, reply: aiReply, tools: simulatedTools })}\n\n`);
+    res.write(`data: ${JSON.stringify({ type: "done", id: newMsg.id, reply: cleanedReply, tools: simulatedTools })}\n\n`);
     res.end();
   });
 
