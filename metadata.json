@@ -1,0 +1,6 @@
+{
+  "name": "Local AI Agent",
+  "description": "Uma interface web moderna e responsiva estilo ChatGPT/OpenWebUI para agentes de IA locais (llama.cpp + SQLite).",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
