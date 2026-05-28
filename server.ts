@@ -149,6 +149,9 @@ async function startServer() {
   const app = express();
   const PORT = 3000;
 
+  // Active stream tracker map to support session resilience and lock concurrent generators
+  const activeStreams = new Map<string, { buffer: string; active: boolean; res?: any }>();
+
   // Elevate body limit for handling file base64 uploads easily
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ extended: true, limit: "50mb" }));
@@ -323,8 +326,26 @@ async function startServer() {
     res.setHeader("X-Accel-Buffering", "no");
     res.flushHeaders();
 
+    // Setup active streamState track machine for this session request
+    const streamState = {
+      buffer: "",
+      active: true,
+      res
+    };
+
+    // Deactivate and safely finish any previous stream running for this same conversationId to prevent multiplex or CPU leakage
+    const previousStream = activeStreams.get(activeId);
+    if (previousStream) {
+      console.log(`[Stream Manager] Desativando e limpando stream anterior concorrente da conversa: ${activeId}`);
+      previousStream.active = false;
+      try {
+        previousStream.res?.end();
+      } catch (e2) {}
+    }
+    activeStreams.set(activeId, streamState);
+
     const safeWrite = (data: string) => {
-      if (!req.destroyed) {
+      if (!req.destroyed && streamState.active) {
         try {
           res.write(data);
         } catch (e) {
@@ -334,7 +355,7 @@ async function startServer() {
     };
 
     const safeEnd = () => {
-      if (!req.destroyed) {
+      if (!req.destroyed && streamState.active) {
         try {
           res.end();
         } catch (e) {
@@ -492,9 +513,10 @@ async function startServer() {
     };
 
     req.on("close", () => {
-      try {
-        controller.abort();
-      } catch (err) {}
+      streamState.active = false;
+      if (activeStreams.get(activeId) === streamState) {
+        activeStreams.delete(activeId);
+      }
       if (aiReply.trim().length > 0) {
         saveFinalMessagePair(aiReply);
       }
@@ -680,7 +702,7 @@ Regras de Contexto:
           model: selectedModel,
           messages: messagesPayload,
           temperature: 0.7,
-          stream: true // Enable streaming at server level
+          stream: true
         }),
         signal: controller.signal
       });
@@ -699,7 +721,12 @@ Regras de Contexto:
           const reader = (llamaResponse.body as any).getReader();
           while (true) {
             const { value, done } = await reader.read();
-            if (done) break;
+            if (done || !streamState.active) {
+              if (!streamState.active) {
+                console.log("[Llama Stream Reader] Interrompendo consumo do stream por desconexão do cliente.");
+              }
+              break;
+            }
             if (value) {
               buffer += decoder.decode(value, { stream: true });
               const lines = buffer.split("\n");
@@ -730,6 +757,10 @@ Regras de Contexto:
         } else {
           // Fallback async iterator
           for await (const chunk of llamaResponse.body as any) {
+            if (!streamState.active) {
+              console.log("[Llama Stream Async Iterator] Interrompendo por desconexão do cliente.");
+              break;
+            }
             buffer += decoder.decode(chunk, { stream: true });
             const lines = buffer.split("\n");
             buffer = lines.pop() || ""; // remainder
@@ -778,11 +809,11 @@ Regras de Contexto:
       }
     } catch (llamaError: any) {
       clearTimeout(timeoutId);
-      console.error("[Llama Manager Fetch Stream Error]:", llamaError);
-      if (req.destroyed) {
-        console.log("[Llama Manager] Cliente desconectado durante stream do llama. Finalizando sem fallback.");
+      if (llamaError.name === "AbortError" || req.destroyed || !streamState.active) {
+        console.log("[Llama Manager] Conexão abortada ou cliente desconectado de forma limpa durante o stream do llama.");
         return;
       }
+      console.error("[Llama Manager Fetch Stream Error]:", llamaError);
       console.log("[Llama Manager] llama-server local não pôde ser alcançado nesta requisição de streaming. Redirecionando para fallback...");
     }
 
@@ -824,6 +855,10 @@ Regras de Contexto:
           });
 
           for await (const chunk of genAIResponseStream) {
+            if (!streamState.active) {
+              console.log("[Fallback Manager] Cliente cancelou stream antes de concluir. Interrompendo geração Gemini.");
+              break;
+            }
             const char = chunk.text || "";
             if (char) {
               aiReply += char;
@@ -838,6 +873,10 @@ Regras de Contexto:
           // Split mock responses into small units to type beautifully
           const mockChunks = fullMock.match(/[^ ]+ *| +/g) || [fullMock];
           for (const element of mockChunks) {
+            if (!streamState.active) {
+              console.log("[Fallback Simulator] Cliente cancelou stream. Interrompendo simulador.");
+              break;
+            }
             aiReply += element;
             safeWrite(`data: ${JSON.stringify({ type: "content", content: element })}\n\n`);
             updatePartialAIReply(aiReply);
