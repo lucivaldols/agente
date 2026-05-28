@@ -369,7 +369,20 @@ async function startServer() {
       }
     };
 
+    const heartbeatInterval = setInterval(() => {
+      if (streamState.active && !req.destroyed) {
+        // Envia linha de comentário SSE padrão ':' de keep-alive a cada 15 segundos
+        // para impedir que o Cloud Run, nginx ou o navegador derrubem a conexão enquanto o llama.cpp processa em CPU
+        try {
+          res.write(":\n\n");
+        } catch (e) {}
+      } else {
+        clearInterval(heartbeatInterval);
+      }
+    }, 15000);
+
     const safeEnd = () => {
+      clearInterval(heartbeatInterval);
       if (!req.destroyed && streamState.active) {
         try {
           res.end();
@@ -529,6 +542,7 @@ async function startServer() {
 
     req.on("close", () => {
       streamState.active = false;
+      clearInterval(heartbeatInterval);
       if (activeStreams.get(activeId) === streamState) {
         activeStreams.delete(activeId);
       }
