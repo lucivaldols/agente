@@ -8,6 +8,7 @@ import path from "path";
 import fs from "fs";
 import { spawn } from "child_process";
 import os from "os";
+import http from "http";
 import { GoogleGenAI } from "@google/genai";
 import { createServer as createViteServer } from "vite";
 
@@ -740,77 +741,45 @@ Regras de Contexto:
 
     try {
       console.log(`[Llama Manager] Tentando se conectar com stream do llama-server local em http://127.0.0.1:${selectedPort}...`);
-      const llamaResponse = await fetch(`http://127.0.0.1:${selectedPort}/v1/chat/completions`, {
+      
+      const requestOptions = {
+        hostname: "127.0.0.1",
+        port: selectedPort,
+        path: "/v1/chat/completions",
         method: "POST",
         headers: {
-          "Content-Type": "application/json"
+          "Content-Type": "application/json",
         },
-        body: JSON.stringify({
-          model: selectedModel,
-          messages: messagesPayload,
-          temperature: 0.7,
-          stream: true
-        }),
-        signal: controller.signal
+      };
+
+      const postData = JSON.stringify({
+        model: selectedModel,
+        messages: messagesPayload,
+        temperature: 0.7,
+        stream: true
       });
 
-      clearTimeout(timeoutId);
-
-      if (llamaResponse.ok && llamaResponse.body) {
-        fetchedFromLlama = true;
-        simulatedTools.push({ icon: "⚡", label: `Processado localmente via llama.cpp (Porta ${selectedPort})` });
-        safeWrite(`data: ${JSON.stringify({ type: "tools", tools: simulatedTools })}\n\n`);
-
-        const decoder = new TextDecoder("utf-8");
-        let buffer = "";
-
-        if (typeof (llamaResponse.body as any).getReader === "function") {
-          const reader = (llamaResponse.body as any).getReader();
-          while (true) {
-            const { value, done } = await reader.read();
-            if (done || !streamState.active) {
-              if (!streamState.active) {
-                console.log("[Llama Stream Reader] Interrompendo consumo do stream por desconexão do cliente.");
-              }
-              break;
-            }
-            if (value) {
-              buffer += decoder.decode(value, { stream: true });
-              const lines = buffer.split("\n");
-              buffer = lines.pop() || ""; // remainder
-
-              for (const line of lines) {
-                const trimmed = line.trim();
-                if (trimmed.startsWith("data: ")) {
-                  const dataStr = trimmed.slice(6).trim();
-                  if (dataStr === "[DONE]") {
-                    continue;
-                  }
-                  try {
-                    const parsed = JSON.parse(dataStr);
-                    const char = parsed.choices?.[0]?.delta?.content || "";
-                    if (char) {
-                      aiReply += char;
-                      safeWrite(`data: ${JSON.stringify({ type: "content", content: char })}\n\n`);
-                      updatePartialAIReply(aiReply);
-                    }
-                  } catch (e) {
-                    // split JSON skip gracefully
-                  }
-                }
-              }
-            }
+      await new Promise<void>((resolve, reject) => {
+        const clientReq = http.request(requestOptions, (clientRes) => {
+          if (clientRes.statusCode && clientRes.statusCode >= 400) {
+            reject(new Error(`llama-server retornou status HTTP ${clientRes.statusCode}`));
+            return;
           }
-        } else {
-          // Fallback async iterator
-          for await (const chunk of llamaResponse.body as any) {
+
+          fetchedFromLlama = true;
+          simulatedTools.push({ icon: "⚡", label: `Processado localmente via llama.cpp (Porta ${selectedPort})` });
+          safeWrite(`data: ${JSON.stringify({ type: "tools", tools: simulatedTools })}\n\n`);
+
+          let llamaBuffer = "";
+
+          clientRes.on("data", (chunk) => {
             if (!streamState.active) {
-              console.log("[Llama Stream Async Iterator] Interrompendo por desconexão do cliente.");
-              break;
+              clientReq.destroy();
+              return;
             }
-            buffer += decoder.decode(chunk, { stream: true });
-            const lines = buffer.split("\n");
-            buffer = lines.pop() || ""; // remainder
+            llamaBuffer += chunk.toString("utf-8");
+            const lines = llamaBuffer.split("\n");
+            llamaBuffer = lines.pop() || ""; // remainder
 
             for (const line of lines) {
               const trimmed = line.trim();
@@ -828,39 +797,67 @@ Regras de Contexto:
                     updatePartialAIReply(aiReply);
                   }
                 } catch (e) {
-                  // partial chunk skip gracefully
+                  // Ignore partial parsing errors
                 }
               }
             }
-          }
-        }
+          });
 
-        // flush final remaining buffer line
-        if (buffer.trim().startsWith("data: ")) {
-          const dataStr = buffer.trim().slice(6).trim();
-          if (dataStr !== "[DONE]") {
-            try {
-              const parsed = JSON.parse(dataStr);
-              const char = parsed.choices?.[0]?.delta?.content || "";
-              if (char) {
-                aiReply += char;
-                safeWrite(`data: ${JSON.stringify({ type: "content", content: char })}\n\n`);
-                updatePartialAIReply(aiReply);
+          clientRes.on("end", () => {
+            // Process remaining buffer
+            if (llamaBuffer.trim().startsWith("data: ")) {
+              const dataStr = llamaBuffer.trim().slice(6).trim();
+              if (dataStr !== "[DONE]") {
+                try {
+                  const parsed = JSON.parse(dataStr);
+                  const char = parsed.choices?.[0]?.delta?.content || "";
+                  if (char) {
+                    aiReply += char;
+                    safeWrite(`data: ${JSON.stringify({ type: "content", content: char })}\n\n`);
+                    updatePartialAIReply(aiReply);
+                  }
+                } catch (e) {}
               }
-            } catch (e) {}
-          }
-        }
-        if (streamState.active) {
-          console.log(`[Llama Manager] Stream completado com sucesso de llama-server (${selectedModel})!`);
-        } else {
-          console.log(`[Llama Manager] Stream do llama-server interrompido após desconexão.`);
-        }
+            }
+            resolve();
+          });
+
+          clientRes.on("error", (err) => {
+            reject(err);
+          });
+        });
+
+        clientReq.on("error", (err) => {
+          reject(err);
+        });
+
+        // Abrupt termination handling
+        const abortHandler = () => {
+          clientReq.destroy();
+          reject(new Error("AbortError"));
+        };
+
+        controller.signal.addEventListener("abort", abortHandler);
+        
+        req.on("close", () => {
+          clientReq.destroy();
+        });
+
+        // Write the POST request data
+        clientReq.write(postData);
+        clientReq.end();
+      });
+
+      clearTimeout(timeoutId);
+
+      if (streamState.active) {
+        console.log(`[Llama Manager] Stream completado com sucesso de llama-server (${selectedModel})!`);
       } else {
-        console.warn(`[Llama Manager] llama-server retornou status HTTP de erro ou no body: ${llamaResponse.status}`);
+        console.log(`[Llama Manager] Stream do llama-server interrompido após desconexão.`);
       }
     } catch (llamaError: any) {
       clearTimeout(timeoutId);
-      if (llamaError.name === "AbortError" || req.destroyed || !streamState.active) {
+      if (llamaError.name === "AbortError" || llamaError.message === "AbortError" || req.destroyed || !streamState.active) {
         console.log("[Llama Manager] Conexão abortada ou cliente desconectado de forma limpa durante o stream do llama.");
         return;
       }
