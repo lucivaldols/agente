@@ -283,6 +283,12 @@ async function startServer() {
   // Matches exact request payload {"message": "Olá"} and response {"reply": "Olá humano"}
   app.post("/chat", async (req, res) => {
     const { message, conversationId, file, port, model, messageId, streamId } = req.body;
+    
+    // Configura o socket HTTP para nunca atingir timeout de inatividade
+    // e ativa Keep-Alive TCP a cada 15 segundos para manter canais abertos sob proxys Nginx/Cloud Run
+    req.socket.setTimeout(0);
+    req.socket.setKeepAlive(true, 15000);
+
     if (!message) {
       return res.status(400).json({ error: "A mensagem é obrigatória." });
     }
@@ -363,6 +369,9 @@ async function startServer() {
       if (!req.destroyed && streamState.active) {
         try {
           res.write(data);
+          if (typeof (res as any).flush === "function") {
+            (res as any).flush();
+          }
         } catch (e) {
           console.warn("[SSE Response Link] Falha silenciosa ao escrever após fechar socket:", e);
         }
@@ -375,6 +384,9 @@ async function startServer() {
         // para impedir que o Cloud Run, nginx ou o navegador derrubem a conexão enquanto o llama.cpp processa em CPU
         try {
           res.write(":\n\n");
+          if (typeof (res as any).flush === "function") {
+            (res as any).flush();
+          }
         } catch (e) {}
       } else {
         clearInterval(heartbeatInterval);
@@ -719,11 +731,12 @@ Regras de Contexto:
     messagesPayload.push({ role: "user", content: activePrompt });
 
     // 1️⃣ High Priority: Attempt reading with continuous stream from standard local llama.cpp server endpoint at port selectedPort
+    // Aumentado para 20 minutos (1200000ms) para dar suporte total a processamentos de CPU lentos e tempos de reflexão longos da IA
     const timeoutId = setTimeout(() => {
       try {
         controller.abort();
       } catch (err) {}
-    }, 120000); // 120 seconds for low-latency/longer CPU processing on mobile devices safely
+    }, 1200000);
 
     try {
       console.log(`[Llama Manager] Tentando se conectar com stream do llama-server local em http://127.0.0.1:${selectedPort}...`);
