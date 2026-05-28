@@ -323,6 +323,26 @@ async function startServer() {
     res.setHeader("X-Accel-Buffering", "no");
     res.flushHeaders();
 
+    const safeWrite = (data: string) => {
+      if (!req.destroyed) {
+        try {
+          res.write(data);
+        } catch (e) {
+          console.warn("[SSE Response Link] Falha silenciosa ao escrever após fechar socket:", e);
+        }
+      }
+    };
+
+    const safeEnd = () => {
+      if (!req.destroyed) {
+        try {
+          res.end();
+        } catch (e) {
+          console.warn("[SSE Response Link] Falha silenciosa ao terminar conexão:", e);
+        }
+      }
+    };
+
     // Prepare simulated tools based on prompt content
     const simulatedTools: Array<{ icon: string; label: string }> = [];
     const lowerMsg = message.toLowerCase();
@@ -432,7 +452,7 @@ async function startServer() {
     }
 
     // Write initial tools back immediately
-    res.write(`data: ${JSON.stringify({ type: "tools", tools: simulatedTools })}\n\n`);
+    safeWrite(`data: ${JSON.stringify({ type: "tools", tools: simulatedTools })}\n\n`);
 
     aiReply = "";
     let fetchedFromLlama = false;
@@ -621,33 +641,66 @@ Regras de Contexto:
       if (llamaResponse.ok && llamaResponse.body) {
         fetchedFromLlama = true;
         simulatedTools.push({ icon: "⚡", label: `Processado localmente via llama.cpp (Porta ${selectedPort})` });
-        res.write(`data: ${JSON.stringify({ type: "tools", tools: simulatedTools })}\n\n`);
+        safeWrite(`data: ${JSON.stringify({ type: "tools", tools: simulatedTools })}\n\n`);
 
         const decoder = new TextDecoder("utf-8");
-        const reader = llamaResponse.body;
         let buffer = "";
 
-        for await (const chunk of reader as any) {
-          buffer += decoder.decode(chunk, { stream: true });
-          const lines = buffer.split("\n");
-          buffer = lines.pop() || ""; // remainder
+        if (typeof (llamaResponse.body as any).getReader === "function") {
+          const reader = (llamaResponse.body as any).getReader();
+          while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            if (value) {
+              buffer += decoder.decode(value, { stream: true });
+              const lines = buffer.split("\n");
+              buffer = lines.pop() || ""; // remainder
 
-          for (const line of lines) {
-            const trimmed = line.trim();
-            if (trimmed.startsWith("data: ")) {
-              const dataStr = trimmed.slice(6).trim();
-              if (dataStr === "[DONE]") {
-                continue;
-              }
-              try {
-                const parsed = JSON.parse(dataStr);
-                const char = parsed.choices?.[0]?.delta?.content || "";
-                if (char) {
-                  aiReply += char;
-                  res.write(`data: ${JSON.stringify({ type: "content", content: char })}\n\n`);
+              for (const line of lines) {
+                const trimmed = line.trim();
+                if (trimmed.startsWith("data: ")) {
+                  const dataStr = trimmed.slice(6).trim();
+                  if (dataStr === "[DONE]") {
+                    continue;
+                  }
+                  try {
+                    const parsed = JSON.parse(dataStr);
+                    const char = parsed.choices?.[0]?.delta?.content || "";
+                    if (char) {
+                      aiReply += char;
+                      safeWrite(`data: ${JSON.stringify({ type: "content", content: char })}\n\n`);
+                    }
+                  } catch (e) {
+                    // split JSON skip gracefully
+                  }
                 }
-              } catch (e) {
-                // partial chunk skip gracefully
+              }
+            }
+          }
+        } else {
+          // Fallback async iterator
+          for await (const chunk of llamaResponse.body as any) {
+            buffer += decoder.decode(chunk, { stream: true });
+            const lines = buffer.split("\n");
+            buffer = lines.pop() || ""; // remainder
+
+            for (const line of lines) {
+              const trimmed = line.trim();
+              if (trimmed.startsWith("data: ")) {
+                const dataStr = trimmed.slice(6).trim();
+                if (dataStr === "[DONE]") {
+                  continue;
+                }
+                try {
+                  const parsed = JSON.parse(dataStr);
+                  const char = parsed.choices?.[0]?.delta?.content || "";
+                  if (char) {
+                    aiReply += char;
+                    safeWrite(`data: ${JSON.stringify({ type: "content", content: char })}\n\n`);
+                  }
+                } catch (e) {
+                  // partial chunk skip gracefully
+                }
               }
             }
           }
@@ -662,7 +715,7 @@ Regras de Contexto:
               const char = parsed.choices?.[0]?.delta?.content || "";
               if (char) {
                 aiReply += char;
-                res.write(`data: ${JSON.stringify({ type: "content", content: char })}\n\n`);
+                safeWrite(`data: ${JSON.stringify({ type: "content", content: char })}\n\n`);
               }
             } catch (e) {}
           }
@@ -674,11 +727,19 @@ Regras de Contexto:
     } catch (llamaError: any) {
       clearTimeout(timeoutId);
       console.error("[Llama Manager Fetch Stream Error]:", llamaError);
+      if (req.destroyed) {
+        console.log("[Llama Manager] Cliente desconectado durante stream do llama. Finalizando sem fallback.");
+        return;
+      }
       console.log("[Llama Manager] llama-server local não pôde ser alcançado nesta requisição de streaming. Redirecionando para fallback...");
     }
 
     // 2️⃣ Fallback: If llama-server is not reachable, stream fallback response
     if (!fetchedFromLlama) {
+      if (req.destroyed) {
+        console.log("[Fallback Manager] Cliente desconectado antes do fallback. Abortando.");
+        return;
+      }
       try {
         if (ai) {
           const systemInstruction = systemPrompt;
@@ -699,7 +760,7 @@ Regras de Contexto:
           }
 
           simulatedTools.push({ icon: "☁️", label: "Processado via nuvem hibrida (Falha de conexão GGUF local)" });
-          res.write(`data: ${JSON.stringify({ type: "tools", tools: simulatedTools })}\n\n`);
+          safeWrite(`data: ${JSON.stringify({ type: "tools", tools: simulatedTools })}\n\n`);
 
           const genAIResponseStream = await ai.models.generateContentStream({
             model: "gemini-3.5-flash",
@@ -714,7 +775,7 @@ Regras de Contexto:
             const char = chunk.text || "";
             if (char) {
               aiReply += char;
-              res.write(`data: ${JSON.stringify({ type: "content", content: char })}\n\n`);
+              safeWrite(`data: ${JSON.stringify({ type: "content", content: char })}\n\n`);
             }
           }
         } else {
@@ -725,7 +786,7 @@ Regras de Contexto:
           const mockChunks = fullMock.match(/[^ ]+ *| +/g) || [fullMock];
           for (const element of mockChunks) {
             aiReply += element;
-            res.write(`data: ${JSON.stringify({ type: "content", content: element })}\n\n`);
+            safeWrite(`data: ${JSON.stringify({ type: "content", content: element })}\n\n`);
             await new Promise((resolve) => setTimeout(resolve, 30));
           }
         }
@@ -733,7 +794,7 @@ Regras de Contexto:
         console.error("Erro ao chamar o fallback em streaming:", error);
         const errText = `⚠️ **Erro de Comunicação Local**\nOcorreu um erro ao processar o seu prompt no llama.cpp local.\n\nDetalhes do erro: \`${error.message || error}\`\n\n*Nota: Certifique-se de que o backend está ativo e o arquivo do modelo GGUF foi carregado corretamente na porta correspondente.*`;
         aiReply = errText;
-        res.write(`data: ${JSON.stringify({ type: "content", content: errText })}\n\n`);
+        safeWrite(`data: ${JSON.stringify({ type: "content", content: errText })}\n\n`);
       }
     }
 
@@ -753,8 +814,8 @@ Regras de Contexto:
     const finalMsgId = savedMsg ? savedMsg.id : "msg_" + Math.random().toString(36).substr(2, 9);
 
     // Send final done signal carrying full metadata for instant synchronization
-    res.write(`data: ${JSON.stringify({ type: "done", id: finalMsgId, reply: cleanedReply, tools: simulatedTools })}\n\n`);
-    res.end();
+    safeWrite(`data: ${JSON.stringify({ type: "done", id: finalMsgId, reply: cleanedReply, tools: simulatedTools })}\n\n`);
+    safeEnd();
   });
 
   // ==========================================
