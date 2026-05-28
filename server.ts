@@ -543,6 +543,11 @@ async function startServer() {
     req.on("close", () => {
       streamState.active = false;
       clearInterval(heartbeatInterval);
+      try {
+        controller.abort();
+      } catch (errAbort) {
+        console.warn("[Stream Manager] Falha silenciosa ao abortar controller do Llama/Gemini na desconexão:", errAbort);
+      }
       if (activeStreams.get(activeId) === streamState) {
         activeStreams.delete(activeId);
       }

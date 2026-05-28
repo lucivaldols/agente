@@ -17,7 +17,8 @@ import {
   Brain,
   ChevronRight,
   Info,
-  Settings
+  Settings,
+  Square
 } from "lucide-react";
 import { Sidebar } from "./components/Sidebar";
 import { MarkdownRenderer } from "./components/MarkdownRenderer";
@@ -60,6 +61,7 @@ export default function App() {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const activeAbortControllerRef = useRef<AbortController | null>(null);
+  const lastSendTimeRef = useRef<number>(0);
 
   // Load user progress profile from SQLite database
   const fetchProgress = async () => {
@@ -150,6 +152,13 @@ export default function App() {
   useEffect(() => {
     if (activeConversationId) {
       localStorage.setItem("active_conversation_id", activeConversationId);
+      // Se houver stream ativo e o usuário trocar de conversa, aborte a conexão de forma limpa!
+      if (activeAbortControllerRef.current) {
+        console.log("[App] Abortando stream ativo ao trocar de sessão de conversa.");
+        try {
+          activeAbortControllerRef.current.abort();
+        } catch (e) {}
+      }
       fetchHistory(activeConversationId);
     }
   }, [activeConversationId]);
@@ -244,11 +253,23 @@ export default function App() {
 
   // Submit trigger to backend `/chat` endpoint
   const handleSendMessage = async () => {
+    // 1. Lock de envio (concorrência total): impede o disparo se um stream já estiver ativo
+    if (isLoading) return;
+
+    // 2. Debounce temporal de 800ms contra cliques em loops ou dobles-clicks
+    const now = Date.now();
+    if (now - lastSendTimeRef.current < 800) {
+      console.warn("[App] Envio cancelado pelo debounce protetor de cliques.");
+      return;
+    }
+    lastSendTimeRef.current = now;
+
     const messageText = inputMessage.trim();
     if (!messageText && !fileDraft) return;
 
+    // Cancela qualquer requisição residual por segurança antes de inicializar a nova transmissão
     if (activeAbortControllerRef.current) {
-      console.log("[App] Abortando stream anterior ativo.");
+      console.log("[App] Abortando conexão pendente residual.");
       try {
         activeAbortControllerRef.current.abort();
       } catch (e) {}
@@ -738,17 +759,34 @@ export default function App() {
                 </div>
 
                 {/* Process send button element */}
-                <button
-                  onClick={handleSendMessage}
-                  disabled={isLoading || (!inputMessage.trim() && !fileDraft)}
-                  className={`h-8 px-4 rounded-xl flex items-center justify-center gap-1.5 text-xs font-semibold select-none transition-all cursor-pointer
-                    ${isLoading || (!inputMessage.trim() && !fileDraft)
-                      ? "bg-slate-800 text-slate-500 cursor-not-allowed"
-                      : "bg-brand-600 hover:bg-brand-700 text-white shadow-lg active:scale-95"}`}
-                >
-                  <Send size={12} />
-                  <span>Enviar</span>
-                </button>
+                {isLoading ? (
+                  <button
+                    onClick={() => {
+                      if (activeAbortControllerRef.current) {
+                        try {
+                          activeAbortControllerRef.current.abort();
+                        } catch (e) {}
+                      }
+                    }}
+                    className="h-8 px-4 rounded-xl flex items-center justify-center gap-1.5 text-xs font-semibold select-none transition-all cursor-pointer bg-red-650 hover:bg-red-700 text-white shadow-lg active:scale-95 duration-200"
+                    title="Parar de gerar resposta"
+                  >
+                    <Square size={12} className="fill-white" />
+                    <span>Parar</span>
+                  </button>
+                ) : (
+                  <button
+                    onClick={handleSendMessage}
+                    disabled={!inputMessage.trim() && !fileDraft}
+                    className={`h-8 px-4 rounded-xl flex items-center justify-center gap-1.5 text-xs font-semibold select-none transition-all cursor-pointer
+                      ${(!inputMessage.trim() && !fileDraft)
+                        ? "bg-slate-800 text-slate-500 cursor-not-allowed"
+                        : "bg-brand-600 hover:bg-brand-700 text-white shadow-lg active:scale-95"}`}
+                  >
+                    <Send size={12} />
+                    <span>Enviar</span>
+                  </button>
+                )}
               </div>
             </div>
 
