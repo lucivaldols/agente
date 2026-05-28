@@ -536,11 +536,12 @@ Regras de Contexto:
         simulatedTools.push({ icon: "⚡", label: `Processado localmente via llama.cpp (Porta ${selectedPort})` });
         res.write(`data: ${JSON.stringify({ type: "tools", tools: simulatedTools })}\n\n`);
 
+        const decoder = new TextDecoder("utf-8");
         const reader = llamaResponse.body;
         let buffer = "";
 
         for await (const chunk of reader as any) {
-          buffer += chunk.toString("utf8");
+          buffer += decoder.decode(chunk, { stream: true });
           const lines = buffer.split("\n");
           buffer = lines.pop() || ""; // remainder
 
