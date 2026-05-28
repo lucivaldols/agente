@@ -343,12 +343,70 @@ async function startServer() {
       }
     };
 
+    const msgId = "msg_" + Math.random().toString(36).substr(2, 9);
+
     // Prepare simulated tools based on prompt content
     const simulatedTools: Array<{ icon: string; label: string }> = [];
     const lowerMsg = message.toLowerCase();
 
+    if (file) {
+      simulatedTools.push({ icon: "📁", label: `Arquivo recebido: ${file.name}` });
+    }
+    if (lowerMsg.includes("salvar") || lowerMsg.includes("escrever") || lowerMsg.includes("arquivo")) {
+      simulatedTools.push({ icon: "💾", label: "Arquivo salvo localmente no disco" });
+    }
+    if (lowerMsg.includes("roda") || lowerMsg.includes("executa") || lowerMsg.includes("script")) {
+      simulatedTools.push({ icon: "⚙️", label: "Ferramenta executada no servidor" });
+    }
+    if (lowerMsg.includes("lembre") || lowerMsg.includes("salve na memoria") || lowerMsg.includes("memorize")) {
+      simulatedTools.push({ icon: "🧠", label: "Memória de longo prazo atualizada no SQLite" });
+    }
+    if (lowerMsg.includes("tempo") || lowerMsg.includes("clima") || lowerMsg.includes("previsao")) {
+      simulatedTools.push({ icon: "🌦️", label: "Consulta de clima em tempo real simulada" });
+    }
+
+    const userMessageToSave = message === "Analise o arquivo anexo" && file ? `Arquivo enviado: ${file.name}` : message;
+
+    // Immediately push empty/loading message state to current SQLite database to support instant browser rehydration
+    const initialMsg: Message = {
+      id: msgId,
+      user_message: userMessageToSave,
+      ai_response: "",
+      timestamp: new Date().toISOString(),
+      tools: simulatedTools.length > 0 ? simulatedTools : undefined,
+      file: file ? { name: file.name, size: file.size, type: file.type } : undefined
+    };
+    conversation.messages.push(initialMsg);
+    writeDB(db);
+
     const controller = new AbortController();
     let aiReply = "";
+
+    let lastWriteTime = 0;
+    const writeThrottleMs = 1200; // Persist every 1.2s to DB to reduce disk I/O but guarantee fresh loading
+
+    const updatePartialAIReply = (partialText: string, forceWrite = false) => {
+      const progressRegex = /\[UPDATE_PROGRESS\]\s*(\{[\s\S]*?\})/i;
+      const cleaned = partialText.replace(progressRegex, "").trim();
+
+      const currentDb = readDB();
+      const currentConv = currentDb.conversations[activeId];
+      if (currentConv) {
+        const msgIdx = currentConv.messages.findIndex(m => m.id === msgId);
+        if (msgIdx !== -1) {
+          currentConv.messages[msgIdx].ai_response = cleaned || "...";
+          if (simulatedTools.length > 0) {
+            currentConv.messages[msgIdx].tools = simulatedTools;
+          }
+          const now = Date.now();
+          if (forceWrite || (now - lastWriteTime > writeThrottleMs)) {
+            writeDB(currentDb);
+            lastWriteTime = now;
+            console.log(`[Llama Manager] Sincronização incremental salva com sucesso: ${cleaned.length} caracteres.`);
+          }
+        }
+      }
+    };
 
     let isSaved = false;
     const saveFinalMessagePair = (finalReplyText: string) => {
@@ -411,18 +469,25 @@ async function startServer() {
           }
         }
 
-        const newMsg: Message = {
-          id: "msg_" + Math.random().toString(36).substr(2, 9),
-          user_message: message,
-          ai_response: cleanedReply || "...",
-          timestamp: new Date().toISOString(),
-          tools: simulatedTools.length > 0 ? simulatedTools : undefined,
-          file: file ? { name: file.name, size: file.size, type: file.type } : undefined
-        };
-
-        currentConv.messages.push(newMsg);
+        const msgIdx = currentConv.messages.findIndex(m => m.id === msgId);
+        if (msgIdx !== -1) {
+          currentConv.messages[msgIdx].ai_response = cleanedReply || "...";
+          if (simulatedTools.length > 0) {
+            currentConv.messages[msgIdx].tools = simulatedTools;
+          }
+        } else {
+          const fallbackMsg: Message = {
+            id: msgId,
+            user_message: message,
+            ai_response: cleanedReply || "...",
+            timestamp: new Date().toISOString(),
+            tools: simulatedTools.length > 0 ? simulatedTools : undefined,
+            file: file ? { name: file.name, size: file.size, type: file.type } : undefined
+          };
+          currentConv.messages.push(fallbackMsg);
+        }
         writeDB(currentDb);
-        console.log(`[Llama Manager] Par de mensagens persistido com sucesso para a sessão ${activeId}.`);
+        console.log(`[Llama Manager] Par de mensagens final persistido com sucesso para a sessão ${activeId}.`);
       }
     };
 
@@ -434,22 +499,6 @@ async function startServer() {
         saveFinalMessagePair(aiReply);
       }
     });
-
-    if (file) {
-      simulatedTools.push({ icon: "📁", label: `Arquivo recebido: ${file.name}` });
-    }
-    if (lowerMsg.includes("salvar") || lowerMsg.includes("escrever") || lowerMsg.includes("arquivo")) {
-      simulatedTools.push({ icon: "💾", label: "Arquivo salvo localmente no disco" });
-    }
-    if (lowerMsg.includes("roda") || lowerMsg.includes("executa") || lowerMsg.includes("script")) {
-      simulatedTools.push({ icon: "⚙️", label: "Ferramenta executada no servidor" });
-    }
-    if (lowerMsg.includes("lembre") || lowerMsg.includes("salve na memoria") || lowerMsg.includes("memorize")) {
-      simulatedTools.push({ icon: "🧠", label: "Memória de longo prazo atualizada no SQLite" });
-    }
-    if (lowerMsg.includes("tempo") || lowerMsg.includes("clima") || lowerMsg.includes("previsao")) {
-      simulatedTools.push({ icon: "☁️", label: "Ferramenta clima executada" });
-    }
 
     // Write initial tools back immediately
     safeWrite(`data: ${JSON.stringify({ type: "tools", tools: simulatedTools })}\n\n`);
@@ -669,6 +718,7 @@ Regras de Contexto:
                     if (char) {
                       aiReply += char;
                       safeWrite(`data: ${JSON.stringify({ type: "content", content: char })}\n\n`);
+                      updatePartialAIReply(aiReply);
                     }
                   } catch (e) {
                     // split JSON skip gracefully
@@ -697,6 +747,7 @@ Regras de Contexto:
                   if (char) {
                     aiReply += char;
                     safeWrite(`data: ${JSON.stringify({ type: "content", content: char })}\n\n`);
+                    updatePartialAIReply(aiReply);
                   }
                 } catch (e) {
                   // partial chunk skip gracefully
@@ -716,6 +767,7 @@ Regras de Contexto:
               if (char) {
                 aiReply += char;
                 safeWrite(`data: ${JSON.stringify({ type: "content", content: char })}\n\n`);
+                updatePartialAIReply(aiReply);
               }
             } catch (e) {}
           }
@@ -776,6 +828,7 @@ Regras de Contexto:
             if (char) {
               aiReply += char;
               safeWrite(`data: ${JSON.stringify({ type: "content", content: char })}\n\n`);
+              updatePartialAIReply(aiReply);
             }
           }
         } else {
@@ -787,6 +840,7 @@ Regras de Contexto:
           for (const element of mockChunks) {
             aiReply += element;
             safeWrite(`data: ${JSON.stringify({ type: "content", content: element })}\n\n`);
+            updatePartialAIReply(aiReply);
             await new Promise((resolve) => setTimeout(resolve, 30));
           }
         }
@@ -809,9 +863,9 @@ Regras de Contexto:
     // Retrieve the newly added message clean text to send to frontend
     const currentDb = readDB();
     const currentConv = currentDb.conversations[activeId];
-    const savedMsg = currentConv?.messages[currentConv.messages.length - 1];
+    const savedMsg = currentConv?.messages.find(m => m.id === msgId);
     const cleanedReply = savedMsg ? savedMsg.ai_response : aiReply;
-    const finalMsgId = savedMsg ? savedMsg.id : "msg_" + Math.random().toString(36).substr(2, 9);
+    const finalMsgId = savedMsg ? savedMsg.id : msgId;
 
     // Send final done signal carrying full metadata for instant synchronization
     safeWrite(`data: ${JSON.stringify({ type: "done", id: finalMsgId, reply: cleanedReply, tools: simulatedTools })}\n\n`);

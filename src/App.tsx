@@ -22,11 +22,11 @@ import {
 import { Sidebar } from "./components/Sidebar";
 import { MarkdownRenderer } from "./components/MarkdownRenderer";
 import { ToolCard } from "./components/ToolCard";
-import { Conversation, Message, FileData } from "./types";
+import { Conversation, Message, FileData, UserProgress } from "./types";
 import { motion, AnimatePresence } from "motion/react";
 
 export default function App() {
-  const [conversations, setConversations] = useState<any[]>([]);
+  const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeConversationId, setActiveConversationId] = useState<string>(() => {
     return localStorage.getItem("active_conversation_id") || "default-session";
   });
@@ -37,7 +37,7 @@ export default function App() {
   const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [dragActive, setDragActive] = useState<boolean>(false);
-  const [userProgress, setUserProgress] = useState<any>(null);
+  const [userProgress, setUserProgress] = useState<UserProgress | null>(null);
 
   const [configPort, setConfigPort] = useState<number>(() => {
     const saved = localStorage.getItem("llama_port");
@@ -111,6 +111,9 @@ export default function App() {
           const exists = data.some((c: any) => c.id === savedActiveId);
           const defaultId = selectActiveId || (exists && savedActiveId ? savedActiveId : data[0].id);
           setActiveConversationId(defaultId);
+        } else {
+          setActiveConversationId("default-session");
+          setMessages([]);
         }
       }
     } catch (err) {

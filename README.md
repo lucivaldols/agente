@@ -73,7 +73,7 @@ cd ~/llama.cpp && ./build/bin/llama-server -m ~/models/tinyllama.gguf --host 127
 ```
 *   O servidor Express monitora de forma constante os logs de `stdout` e `stderr` do processo do llama.cpp para depuração instantânea no console do desenvolvedor.
 
-### 2. Fluxo de Transmissão em Alta Velocidade (SSE Streaming)
+### 2. Fluxo de Transmissão em Alta Velocidade (SSE Streaming) e Resiliência
 A conexão de streaming entre o Frontend e o Llama.cpp não sofre buffering em proxies intermediários devido à injeção dos headers de desativação de cache e aceleração:
 ```typescript
 res.setHeader("Content-Type", "text/event-stream");
@@ -82,7 +82,14 @@ res.setHeader("Connection", "keep-alive");
 res.setHeader("X-Accel-Buffering", "no"); // Impede buffering do Nginx / Cloud Run
 ```
 
-No frontend (`App.tsx`), os pacotes em rede são lidos sequencialmente usando a API `ReadableStream` de forma assíncrona, tratando quebras de linhas incompletas no buffer de bytes de caracteres `utf-8`.
+Para garantir resiliência nível produção e eliminar interrupções abruptas ou perda de dados, o sistema implementa os seguintes mecanismos avançados:
+
+*   **Isolamento de Controles de Abortamento:** O backend utiliza instâncias independentes de `AbortController`. O temporizador de timeout de segurança de 120 segundos opera isolado do ciclo de reinício, prevenindo exceções generalizadas de `AbortError` desordenadas no console do Node.js.
+*   **Decodificação de Streams Avançada (Streams API):** O consumo do payload de streaming do Llama baseia-se na interface estável `getReader()` (Streams API do Node/Undici/Fetch). Isso mitiga inconsistências de buffers assíncronos e assegura tratamento caractere por caractere via `TextDecoder` de forma confiável.
+*   **Tratamento Seguro de Desconexão e Rehidratação:**
+    *   No Backend: Se o cliente interromper a requisição (ex: fechando a guia ou atualizando a página), o evento `req.on("close")` é disparado. O servidor intercepta instantaneamente a transmissão, captura o progresso parcial gerado pelo modelo até o momento corrente e faz a persistência imediata e segura ("flush") dos dados pendentes antes de liberar os recursos do host.
+    *   No Frontend: O estado da conversa ativa é sincronizado no `localStorage` do navegador e as mensagens são carregadas dinamicamente na inicialização do componente pelo endpoint `/history?conversationId=...`, reidratando instantaneamente toda a árvore de histórico e evitando o sumiço visual de respostas.
+*   **Operações de Escrita Seguras (`safeWrite` / `safeEnd`):** Métodos inteligentes que encapsulam as saídas do stream HTTP para evitar falhas ou estouro de pilha ao tentar gravar em sockets que já foram desconectados pelo cliente.
 
 ### 3. Loop de Persistência Dinâmica (Auto-Upgrade do Estudante)
 Quando o modelo de linguagem detecta evolução, correções bem sucedidas de bugs ou novos conceitos estudados, ele gera em linha única no final absoluto de sua transmissão o marcador formatado `[UPDATE_PROGRESS]`:
