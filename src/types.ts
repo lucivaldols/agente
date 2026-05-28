@@ -22,6 +22,8 @@ export interface Message {
   user_message: string;
   ai_response: string;
   timestamp: string;
+  status?: 'streaming' | 'completed' | 'incomplete' | 'error';
+  error_message?: string;
   tools?: ToolExecution[];
   file?: FileData;
 }

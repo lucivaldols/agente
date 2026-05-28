@@ -150,7 +150,13 @@ async function startServer() {
   const PORT = 3000;
 
   // Active stream tracker map to support session resilience and lock concurrent generators
-  const activeStreams = new Map<string, { buffer: string; active: boolean; res?: any }>();
+  const activeStreams = new Map<string, {
+    buffer: string;
+    active: boolean;
+    res?: any;
+    abortController?: AbortController;
+    streamId?: string;
+  }>();
 
   // Elevate body limit for handling file base64 uploads easily
   app.use(express.json({ limit: "50mb" }));
@@ -276,7 +282,7 @@ async function startServer() {
     // POST /chat - Chat endpoint processing the request
   // Matches exact request payload {"message": "Olá"} and response {"reply": "Olá humano"}
   app.post("/chat", async (req, res) => {
-    const { message, conversationId, file, port, model } = req.body;
+    const { message, conversationId, file, port, model, messageId, streamId } = req.body;
     if (!message) {
       return res.status(400).json({ error: "A mensagem é obrigatória." });
     }
@@ -326,18 +332,27 @@ async function startServer() {
     res.setHeader("X-Accel-Buffering", "no");
     res.flushHeaders();
 
+    const controller = new AbortController();
+
     // Setup active streamState track machine for this session request
     const streamState = {
       buffer: "",
       active: true,
-      res
+      res,
+      abortController: controller,
+      streamId: (streamId as string) || "stream_" + Math.random().toString(36).substr(2, 9)
     };
 
     // Deactivate and safely finish any previous stream running for this same conversationId to prevent multiplex or CPU leakage
     const previousStream = activeStreams.get(activeId);
     if (previousStream) {
-      console.log(`[Stream Manager] Desativando e limpando stream anterior concorrente da conversa: ${activeId}`);
+      console.log(`[Stream Manager] Desativando e abortando stream anterior concorrente da conversa: ${activeId}`);
       previousStream.active = false;
+      try {
+        previousStream.abortController?.abort();
+      } catch (errAbort) {
+        console.warn("[Stream Manager] Falha ao abortar controller do stream anterior:", errAbort);
+      }
       try {
         previousStream.res?.end();
       } catch (e2) {}
@@ -364,7 +379,7 @@ async function startServer() {
       }
     };
 
-    const msgId = "msg_" + Math.random().toString(36).substr(2, 9);
+    const msgId = (messageId as string) || "msg_" + Math.random().toString(36).substr(2, 9);
 
     // Prepare simulated tools based on prompt content
     const simulatedTools: Array<{ icon: string; label: string }> = [];
@@ -400,7 +415,7 @@ async function startServer() {
     conversation.messages.push(initialMsg);
     writeDB(db);
 
-    const controller = new AbortController();
+    // controller is already instantiated above
     let aiReply = "";
 
     let lastWriteTime = 0;
@@ -803,7 +818,11 @@ Regras de Contexto:
             } catch (e) {}
           }
         }
-        console.log(`[Llama Manager] SUCESSO: Stream completado de llama-server (${selectedModel})!`);
+        if (streamState.active) {
+          console.log(`[Llama Manager] Stream completado com sucesso de llama-server (${selectedModel})!`);
+        } else {
+          console.log(`[Llama Manager] Stream do llama-server interrompido após desconexão.`);
+        }
       } else {
         console.warn(`[Llama Manager] llama-server retornou status HTTP de erro ou no body: ${llamaResponse.status}`);
       }

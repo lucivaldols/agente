@@ -59,6 +59,7 @@ export default function App() {
   const chatEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const activeAbortControllerRef = useRef<AbortController | null>(null);
 
   // Load user progress profile from SQLite database
   const fetchProgress = async () => {
@@ -138,6 +139,11 @@ export default function App() {
   useEffect(() => {
     fetchConversations();
     fetchProgress();
+    return () => {
+      if (activeAbortControllerRef.current) {
+        activeAbortControllerRef.current.abort();
+      }
+    };
   }, []);
 
   // Sync conversation content when selection updates
@@ -241,9 +247,21 @@ export default function App() {
     const messageText = inputMessage.trim();
     if (!messageText && !fileDraft) return;
 
+    if (activeAbortControllerRef.current) {
+      console.log("[App] Abortando stream anterior ativo.");
+      try {
+        activeAbortControllerRef.current.abort();
+      } catch (e) {}
+    }
+
+    const abortController = new AbortController();
+    activeAbortControllerRef.current = abortController;
+
+    const msgId = "msg_" + Date.now() + "_" + Math.random().toString(36).substr(2, 9);
+
     // Ready a optimistic user message node in local state
     const temporaryUserMsg: Message = {
-      id: "temp_" + Date.now(),
+      id: msgId,
       user_message: messageText || `Arquivo enviado: ${fileDraft?.name}`,
       ai_response: "",
       timestamp: new Date().toISOString(),
@@ -256,6 +274,8 @@ export default function App() {
     setFileDraft(null);
     setIsLoading(true);
 
+    let accumulatedResponse = "";
+
     try {
       const response = await fetch("/chat", {
         method: "POST",
@@ -265,8 +285,11 @@ export default function App() {
           conversationId: activeConversationId,
           file: filePayload,
           port: configPort,
-          model: configModel
-        })
+          model: configModel,
+          messageId: msgId,
+          streamId: "stream_" + Date.now() + "_" + Math.random().toString(36).substr(2, 9)
+        }),
+        signal: abortController.signal
       });
 
       if (!response.ok) {
@@ -280,7 +303,6 @@ export default function App() {
       }
 
       let doneReading = false;
-      let accumulatedResponse = "";
       let currentTools: any[] = [];
       let buffer = "";
 
@@ -306,7 +328,7 @@ export default function App() {
                   currentTools = parsed.tools || [];
                   setMessages((prev) =>
                     prev.map((m) =>
-                      m.id === temporaryUserMsg.id
+                      m.id === msgId
                         ? { ...m, tools: currentTools }
                         : m
                     )
@@ -316,7 +338,7 @@ export default function App() {
                   const visibleResponse = accumulatedResponse.split("[UPDATE_PROGRESS]")[0];
                   setMessages((prev) =>
                     prev.map((m) =>
-                      m.id === temporaryUserMsg.id
+                      m.id === msgId
                         ? { ...m, ai_response: visibleResponse }
                         : m
                     )
@@ -327,7 +349,7 @@ export default function App() {
                   const visibleFinalReply = finalReply.split("[UPDATE_PROGRESS]")[0];
                   setMessages((prev) =>
                     prev.map((m) =>
-                      m.id === temporaryUserMsg.id
+                      m.id === msgId
                         ? {
                             ...m,
                             id: parsed.id || m.id,
@@ -350,19 +372,41 @@ export default function App() {
       fetchConversations(activeConversationId);
       fetchProgress();
     } catch (err: any) {
-      console.error("Erro ao enviar mensagem:", err);
-      setMessages((prev) =>
-        prev.map((m) =>
-          m.id === temporaryUserMsg.id
-            ? {
-                ...m,
-                ai_response: `⚠️ **Erro local de processamento**\nNão foi possível obter resposta do servidor local. Verifique se o host está ativo.\n\nDetalhes: \`${err.message || err}\``
-              }
-            : m
-        )
-      );
+      if (err.name === "AbortError") {
+        console.log("[App] Requisição abortada pelo usuário de forma limpa.");
+        // Preserve whatever partial response we got
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === msgId
+              ? {
+                  ...m,
+                  ai_response: accumulatedResponse 
+                    ? accumulatedResponse.split("[UPDATE_PROGRESS]")[0] + "\n\n*🛑 Stream interrompido pelo usuário*"
+                    : "*🛑 Stream interrompido pelo usuário*"
+                }
+              : m
+          )
+        );
+      } else {
+        console.error("Erro ao enviar mensagem:", err);
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === msgId
+              ? {
+                  ...m,
+                  ai_response: accumulatedResponse
+                    ? accumulatedResponse.split("[UPDATE_PROGRESS]")[0] + `\n\n⚠️ **Conexão encerrada com erro**\nDetalhes: \`${err.message || err}\``
+                    : `⚠️ **Erro local de processamento**\nNão foi possível obter resposta do servidor local. Verifique se o host está ativo.\n\nDetalhes: \`${err.message || err}\``
+                }
+              : m
+          )
+        );
+      }
     } finally {
       setIsLoading(false);
+      if (activeAbortControllerRef.current === abortController) {
+        activeAbortControllerRef.current = null;
+      }
     }
   };
 
