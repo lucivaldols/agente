@@ -327,6 +327,94 @@ async function startServer() {
     const simulatedTools: Array<{ icon: string; label: string }> = [];
     const lowerMsg = message.toLowerCase();
 
+    const controller = new AbortController();
+    let aiReply = "";
+
+    let isSaved = false;
+    const saveFinalMessagePair = (finalReplyText: string) => {
+      if (isSaved) return;
+      isSaved = true;
+
+      const currentDb = readDB();
+      const currentConv = currentDb.conversations[activeId];
+      if (currentConv) {
+        let cleanedReply = finalReplyText;
+        const progressRegex = /\[UPDATE_PROGRESS\]\s*(\{[\s\S]*?\})/i;
+        const match = finalReplyText.match(progressRegex);
+        if (match) {
+          try {
+            const parsedProgress = JSON.parse(match[1]);
+            if (!currentDb.userProgress) {
+              currentDb.userProgress = {
+                id: "user-1",
+                topic: "Lógica Geral",
+                level: "iniciante",
+                last_interaction: new Date().toISOString(),
+                mistakes: [],
+                achievements: [],
+                notes: ""
+              };
+            }
+            if (parsedProgress.level) currentDb.userProgress.level = parsedProgress.level;
+            if (parsedProgress.topic) currentDb.userProgress.topic = parsedProgress.topic;
+            if (parsedProgress.mistakes && Array.isArray(parsedProgress.mistakes)) {
+              currentDb.userProgress.mistakes = Array.from(new Set([...currentDb.userProgress.mistakes, ...parsedProgress.mistakes])).slice(-8);
+            }
+            if (parsedProgress.achievements && Array.isArray(parsedProgress.achievements)) {
+              currentDb.userProgress.achievements = Array.from(new Set([...currentDb.userProgress.achievements, ...parsedProgress.achievements])).slice(-8);
+            }
+            if (parsedProgress.notes) currentDb.userProgress.notes = parsedProgress.notes;
+            currentDb.userProgress.last_interaction = new Date().toISOString();
+            console.log("[SQLite Memória] Auto-evolução do estudante salva de forma permanente devido a desconexão ou conclusão.");
+          } catch (e) {
+            console.error("[SQLite Memória] Erro ao tratar JSON de progresso na desconexão:", e);
+          }
+          cleanedReply = finalReplyText.replace(progressRegex, "").trim();
+        } else {
+          if (!currentDb.userProgress) {
+            currentDb.userProgress = {
+              id: "user-1",
+              topic: "Lógica Geral",
+              level: "iniciante",
+              last_interaction: new Date().toISOString(),
+              mistakes: [],
+              achievements: [],
+              notes: ""
+            };
+          }
+          currentDb.userProgress.last_interaction = new Date().toISOString();
+          const lowerMsgInput = message.toLowerCase();
+          if (lowerMsgInput.includes("erro") || lowerMsgInput.includes("muda") || lowerMsgInput.includes("bug")) {
+            currentDb.userProgress.mistakes = Array.from(new Set([...currentDb.userProgress.mistakes, "Explorou erros lógicos"])).slice(-8);
+          } else {
+            currentDb.userProgress.achievements = Array.from(new Set([...currentDb.userProgress.achievements, "Enviou mensagem local"])).slice(-8);
+          }
+        }
+
+        const newMsg: Message = {
+          id: "msg_" + Math.random().toString(36).substr(2, 9),
+          user_message: message,
+          ai_response: cleanedReply || "...",
+          timestamp: new Date().toISOString(),
+          tools: simulatedTools.length > 0 ? simulatedTools : undefined,
+          file: file ? { name: file.name, size: file.size, type: file.type } : undefined
+        };
+
+        currentConv.messages.push(newMsg);
+        writeDB(currentDb);
+        console.log(`[Llama Manager] Par de mensagens persistido com sucesso para a sessão ${activeId}.`);
+      }
+    };
+
+    req.on("close", () => {
+      try {
+        controller.abort();
+      } catch (err) {}
+      if (aiReply.trim().length > 0) {
+        saveFinalMessagePair(aiReply);
+      }
+    });
+
     if (file) {
       simulatedTools.push({ icon: "📁", label: `Arquivo recebido: ${file.name}` });
     }
@@ -346,7 +434,7 @@ async function startServer() {
     // Write initial tools back immediately
     res.write(`data: ${JSON.stringify({ type: "tools", tools: simulatedTools })}\n\n`);
 
-    let aiReply = "";
+    aiReply = "";
     let fetchedFromLlama = false;
 
     // Build OpenAI-compatible messaging sequence including full local history memory with developer instructions
@@ -506,7 +594,6 @@ Regras de Contexto:
     messagesPayload.push({ role: "user", content: activePrompt });
 
     // 1️⃣ High Priority: Attempt reading with continuous stream from standard local llama.cpp server endpoint at port selectedPort
-    const controller = new AbortController();
     const timeoutId = setTimeout(() => {
       try {
         controller.abort();
@@ -655,75 +742,18 @@ Regras de Contexto:
       simulatedTools.push({ icon: "🧠", label: "Memória SQLite atualizada" });
     }
 
-    // Process progress database updates and clean raw markdown if appended by the AI model
-    let cleanedReply = aiReply;
-    const progressRegex = /\[UPDATE_PROGRESS\]\s*(\{[\s\S]*?\})/i;
-    const match = aiReply.match(progressRegex);
-    if (match) {
-      try {
-        const parsedProgress = JSON.parse(match[1]);
-        if (!db.userProgress) {
-          db.userProgress = {
-            id: "user-1",
-            topic: "Lógica Geral",
-            level: "iniciante",
-            last_interaction: new Date().toISOString(),
-            mistakes: [],
-            achievements: [],
-            notes: ""
-          };
-        }
-        if (parsedProgress.level) db.userProgress.level = parsedProgress.level;
-        if (parsedProgress.topic) db.userProgress.topic = parsedProgress.topic;
-        if (parsedProgress.mistakes && Array.isArray(parsedProgress.mistakes)) {
-          db.userProgress.mistakes = Array.from(new Set([...db.userProgress.mistakes, ...parsedProgress.mistakes])).slice(-8);
-        }
-        if (parsedProgress.achievements && Array.isArray(parsedProgress.achievements)) {
-          db.userProgress.achievements = Array.from(new Set([...db.userProgress.achievements, ...parsedProgress.achievements])).slice(-8);
-        }
-        if (parsedProgress.notes) db.userProgress.notes = parsedProgress.notes;
-        db.userProgress.last_interaction = new Date().toISOString();
-        console.log("[SQLite Memória] Auto-evolução do estudante salva de forma permanente.");
-      } catch (e) {
-        console.error("[SQLite Memória] Erro ao tratar JSON de progresso:", e);
-      }
-      cleanedReply = aiReply.replace(progressRegex, "").trim();
-    } else {
-      // Offline fallback: simulate auto progress to let the user play with things!
-      if (!db.userProgress) {
-        db.userProgress = {
-          id: "user-1",
-          topic: "Lógica Geral",
-          level: "iniciante",
-          last_interaction: new Date().toISOString(),
-          mistakes: [],
-          achievements: [],
-          notes: ""
-        };
-      }
-      db.userProgress.last_interaction = new Date().toISOString();
-      if (lowerMsg.includes("erro") || lowerMsg.includes("muda") || lowerMsg.includes("bug")) {
-        db.userProgress.mistakes = Array.from(new Set([...db.userProgress.mistakes, "Explorou erros lógicos"])).slice(-8);
-      } else {
-        db.userProgress.achievements = Array.from(new Set([...db.userProgress.achievements, "Enviou mensagem local"])).slice(-8);
-      }
-    }
+    // Persist final sequence reliably
+    saveFinalMessagePair(aiReply);
 
-    // Save message pair in database
-    const newMsg: Message = {
-      id: "msg_" + Math.random().toString(36).substr(2, 9),
-      user_message: message,
-      ai_response: cleanedReply,
-      timestamp: new Date().toISOString(),
-      tools: simulatedTools.length > 0 ? simulatedTools : undefined,
-      file: file ? { name: file.name, size: file.size, type: file.type } : undefined
-    };
-
-    conversation.messages.push(newMsg);
-    writeDB(db);
+    // Retrieve the newly added message clean text to send to frontend
+    const currentDb = readDB();
+    const currentConv = currentDb.conversations[activeId];
+    const savedMsg = currentConv?.messages[currentConv.messages.length - 1];
+    const cleanedReply = savedMsg ? savedMsg.ai_response : aiReply;
+    const finalMsgId = savedMsg ? savedMsg.id : "msg_" + Math.random().toString(36).substr(2, 9);
 
     // Send final done signal carrying full metadata for instant synchronization
-    res.write(`data: ${JSON.stringify({ type: "done", id: newMsg.id, reply: cleanedReply, tools: simulatedTools })}\n\n`);
+    res.write(`data: ${JSON.stringify({ type: "done", id: finalMsgId, reply: cleanedReply, tools: simulatedTools })}\n\n`);
     res.end();
   });
 

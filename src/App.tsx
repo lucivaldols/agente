@@ -27,7 +27,9 @@ import { motion, AnimatePresence } from "motion/react";
 
 export default function App() {
   const [conversations, setConversations] = useState<any[]>([]);
-  const [activeConversationId, setActiveConversationId] = useState<string>("default-session");
+  const [activeConversationId, setActiveConversationId] = useState<string>(() => {
+    return localStorage.getItem("active_conversation_id") || "default-session";
+  });
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputMessage, setInputMessage] = useState<string>("");
   const [fileDraft, setFileDraft] = useState<FileData | null>(null);
@@ -105,7 +107,9 @@ export default function App() {
         const data = await res.json();
         setConversations(data);
         if (data.length > 0) {
-          const defaultId = selectActiveId || data[0].id;
+          const savedActiveId = localStorage.getItem("active_conversation_id");
+          const exists = data.some((c: any) => c.id === savedActiveId);
+          const defaultId = selectActiveId || (exists && savedActiveId ? savedActiveId : data[0].id);
           setActiveConversationId(defaultId);
         }
       }
@@ -136,6 +140,7 @@ export default function App() {
   // Sync conversation content when selection updates
   useEffect(() => {
     if (activeConversationId) {
+      localStorage.setItem("active_conversation_id", activeConversationId);
       fetchHistory(activeConversationId);
     }
   }, [activeConversationId]);
