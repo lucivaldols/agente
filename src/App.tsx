@@ -313,6 +313,7 @@ export default function App() {
 
     let accumulatedResponse = "";
     let currentTools: any[] = [];
+    let isCompleted = false;
 
     try {
       await fetchEventSource("/chat", {
@@ -360,6 +361,7 @@ export default function App() {
                 )
               );
             } else if (parsed.type === "done") {
+              isCompleted = true;
               const finalReply = parsed.reply || accumulatedResponse;
               const finalTools = parsed.tools || currentTools;
               const visibleFinalReply = finalReply.split("[UPDATE_PROGRESS]")[0];
@@ -382,8 +384,13 @@ export default function App() {
         },
         onclose() {
           console.log("[App] Canais SSE concluídos com sucesso.");
+          isCompleted = true;
+          abortController.abort();
         },
         onerror(err) {
+          if (isCompleted) {
+            return;
+          }
           console.error("[App] Erro capturado no canal do SSE:", err);
           throw err; // Propaga o erro para impedir ciclos infinitos do fetch-event-source
         }
@@ -392,7 +399,11 @@ export default function App() {
       fetchConversations(activeConversationId);
       fetchProgress();
     } catch (err: any) {
-      if (err.name === "AbortError") {
+      if (err.name === "AbortError" || err.message === "AbortError" || err.message?.includes("user aborted")) {
+        if (isCompleted) {
+          console.log("[App] Stream finalizado com sucesso.");
+          return;
+        }
         console.log("[App] Geração interrompida voluntariamente pelo usuário.");
         setMessages((prev) =>
           prev.map((m) =>

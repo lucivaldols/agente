@@ -337,6 +337,7 @@ async function startServer() {
     res.setHeader("Cache-Control", "no-cache");
     res.setHeader("Connection", "keep-alive");
     res.setHeader("X-Accel-Buffering", "no");
+    res.setHeader("Content-Encoding", "none");
     res.flushHeaders();
 
     const controller = new AbortController();
@@ -365,6 +366,14 @@ async function startServer() {
       } catch (e2) {}
     }
     activeStreams.set(activeId, streamState);
+
+    req.on("close", () => {
+      console.log(`[Stream Connection] Cliente de SSE desconectado ou conexão encerrada para a conversa: ${activeId}`);
+      streamState.active = false;
+      try {
+        controller.abort();
+      } catch (e) {}
+    });
 
     const safeWrite = (data: string) => {
       if (!req.destroyed && streamState.active) {
