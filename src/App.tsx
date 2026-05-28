@@ -35,6 +35,7 @@ import { MarkdownRenderer } from "./components/MarkdownRenderer";
 import { ToolCard } from "./components/ToolCard";
 import { Conversation, Message, FileData, UserProgress } from "./types";
 import { motion, AnimatePresence } from "motion/react";
+import { fetchEventSource } from "@microsoft/fetch-event-source";
 
 export default function App() {
   // Conversational state variables
@@ -303,11 +304,15 @@ export default function App() {
     setIsLoading(true);
 
     let accumulatedResponse = "";
+    let currentTools: any[] = [];
 
     try {
-      const response = await fetch("/chat", {
+      await fetchEventSource("/chat", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "Accept": "text/event-stream"
+        },
         body: JSON.stringify({
           message: messageText || "Analise o arquivo anexo",
           conversationId: activeConversationId,
@@ -317,89 +322,74 @@ export default function App() {
           messageId: msgId,
           streamId: "stream_" + Date.now() + "_" + Math.random().toString(36).substr(2, 9)
         }),
-        signal: abortController.signal
-      });
-
-      if (!response.ok) {
-        throw new Error(`Servidor respondeu com erro ${response.status}`);
-      }
-
-      const reader = response.body?.getReader();
-      const decoder = new TextDecoder("utf-8");
-      if (!reader) {
-        throw new Error("Canal de stream indisponível.");
-      }
-
-      let doneReading = false;
-      let currentTools: any[] = [];
-      let buffer = "";
-
-      while (!doneReading) {
-        const { value, done } = await reader.read();
-        doneReading = done;
-        if (value) {
-          buffer += decoder.decode(value, { stream: !doneReading });
-          
-          let lineEndIndex;
-          while ((lineEndIndex = buffer.indexOf("\n")) !== -1) {
-            const line = buffer.slice(0, lineEndIndex).trim();
-            buffer = buffer.slice(lineEndIndex + 1);
-
-            if (line.startsWith("data: ")) {
-              const dataStr = line.slice(6).trim();
-              if (dataStr === "[DONE]") continue;
-
-              try {
-                const parsed = JSON.parse(dataStr);
-                
-                if (parsed.type === "tools") {
-                  currentTools = parsed.tools || [];
-                  setMessages((prev) =>
-                    prev.map((m) =>
-                      m.id === msgId
-                        ? { ...m, tools: currentTools }
-                        : m
-                    )
-                  );
-                } else if (parsed.type === "content") {
-                  accumulatedResponse += parsed.content;
-                  const visibleResponse = accumulatedResponse.split("[UPDATE_PROGRESS]")[0];
-                  setMessages((prev) =>
-                    prev.map((m) =>
-                      m.id === msgId
-                        ? { ...m, ai_response: visibleResponse }
-                        : m
-                    )
-                  );
-                } else if (parsed.type === "done") {
-                  const finalReply = parsed.reply || accumulatedResponse;
-                  const finalTools = parsed.tools || currentTools;
-                  const visibleFinalReply = finalReply.split("[UPDATE_PROGRESS]")[0];
-                  setMessages((prev) =>
-                    prev.map((m) =>
-                      m.id === msgId
-                        ? {
-                            ...m,
-                            id: parsed.id || m.id,
-                            ai_response: visibleFinalReply,
-                            tools: finalTools
-                          }
-                        : m
-                    )
-                  );
-                }
-              } catch (e) {
-                // Skip parsing split issues
-              }
-            }
+        signal: abortController.signal,
+        openWhenHidden: true,
+        async onopen(response) {
+          if (!response.ok) {
+            throw new Error(`Servidor respondeu com código de erro ${response.status}`);
           }
-        }
-      }
+        },
+        onmessage(msg) {
+          const dataStr = msg.data;
+          if (dataStr === "[DONE]") return;
 
-      fetchConversations(activeConversationId);
-      fetchProgress();
+          try {
+            const parsed = JSON.parse(dataStr);
+            
+            if (parsed.type === "tools") {
+              currentTools = parsed.tools || [];
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m.id === msgId
+                    ? { ...m, tools: currentTools }
+                    : m
+                )
+              );
+            } else if (parsed.type === "content") {
+              accumulatedResponse += parsed.content;
+              const visibleResponse = accumulatedResponse.split("[UPDATE_PROGRESS]")[0];
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m.id === msgId
+                    ? { ...m, ai_response: visibleResponse }
+                    : m
+                )
+              );
+            } else if (parsed.type === "done") {
+              const finalReply = parsed.reply || accumulatedResponse;
+              const finalTools = parsed.tools || currentTools;
+              const visibleFinalReply = finalReply.split("[UPDATE_PROGRESS]")[0];
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m.id === msgId
+                    ? {
+                        ...m,
+                        id: parsed.id || m.id,
+                        ai_response: visibleFinalReply,
+                        tools: finalTools
+                      }
+                    : m
+                )
+              );
+            }
+          } catch (e) {
+            // Ignore parse errors from chunk boundaries
+          }
+        },
+        onclose() {
+          console.log("[App] Canais SSE concluídos com sucesso.");
+          abortController.abort(); // Impede retentativas de reconexão do EventSource após fechar normalmente
+          setIsLoading(false);
+          fetchConversations(activeConversationId);
+          fetchProgress();
+        },
+        onerror(err) {
+          console.error("[App] Erro capturado no canal do SSE:", err);
+          throw err; // Propaga o erro para impedir ciclos infinitos do fetch-event-source
+        }
+      });
     } catch (err: any) {
-      if (err.name === "AbortError") {
+      if (err.name === "AbortError" || abortController.signal.aborted) {
         console.log("[App] Requisição interrompida visualmente.");
         setMessages((prev) =>
           prev.map((m) =>
